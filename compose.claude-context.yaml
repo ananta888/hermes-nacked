@@ -1,0 +1,8 @@
+# Added only when the protected Hermes CLAUDE.md context is active.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/CLAUDE.md
+        target: /policy-context/CLAUDE.md
+        read_only: true

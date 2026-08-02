@@ -5,3 +5,6 @@ services:
       - type: bind
         source: ${HERMES_HOST_ROOT}/.hermes-capabilities
         target: /control/.hermes-capabilities
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/control/workers
+        target: /control/workers

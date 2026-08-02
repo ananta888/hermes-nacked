@@ -24,6 +24,7 @@ CAPABILITY_TOOLSETS: dict[str, tuple[str, ...]] = {
     "claude-direct": (),
     "opencode-direct": (),
     "orchestrator": (),
+    "claude-md": (),
 }
 
 MODIFIERS = {"shell-network"}
@@ -32,6 +33,9 @@ ALIASES = {
     "file": "files",
     "shell": "commandline",
     "terminal": "commandline",
+    "agents": "orchestrator",
+    "agents-md": "orchestrator",
+    "agents.md": "orchestrator",
 }
 VALID_CAPABILITIES = frozenset(CAPABILITY_TOOLSETS) | MODIFIERS
 SANDBOX_CAPABILITIES = frozenset({"files", "commandline", "code"})
@@ -53,6 +57,8 @@ class Policy:
     direct_control: bool
     enable_mcp: bool
     load_orchestrator: bool
+    load_claude_context: bool
+    load_context_files: bool
     direct_workers: tuple[str, ...]
     mcp_workers: tuple[str, ...]
     workers: tuple[str, ...]
@@ -130,6 +136,10 @@ def parse_capabilities(raw: str | None) -> Policy:
         direct_control="hermesctl-direct" in values,
         enable_mcp=("hermesctl-mcp" in values or bool(mcp_workers)),
         load_orchestrator="orchestrator" in values,
+        load_claude_context="claude-md" in values,
+        load_context_files=bool(
+            values.intersection({"orchestrator", "claude-md"})
+        ),
         direct_workers=direct_workers,
         mcp_workers=mcp_workers,
         workers=workers,

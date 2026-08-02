@@ -10,12 +10,16 @@ CAPABILITIES_FILE=${HERMESCTL_CAPABILITIES_FILE:-$ROOT_DIR/.hermes-capabilities}
 POLICY_MODULE_DIR=${HERMESCTL_POLICY_DIR:-$ROOT_DIR/container}
 POLICY_MODULE_NAME=policy
 PROJECT_SKILLS_DIR="$ROOT_DIR/skills"
+WORKER_CONTROL_DIR=${HERMESCTL_WORKER_CONTROL_DIR:-$RUNTIME_DIR/control/workers}
 CONTROL_ONLY=${HERMESCTL_CONTROL_ONLY:-0}
+WORKER_POLICY_MODULE_NAME=worker_policy
 if [[ "$CONTROL_ONLY" == 1 ]]; then
   # Both the controller MCP process and the nested direct-control sandbox
   # receive the policy module at this fixed, read-only path.
   POLICY_MODULE_DIR=/usr/local/lib
   POLICY_MODULE_NAME=hermesctl_policy
+  WORKER_POLICY_MODULE_NAME=hermes_worker_policy
+  WORKER_CONTROL_DIR=${HERMESCTL_WORKER_CONTROL_DIR:-/control/workers}
 fi
 
 export HERMES_HOST_ROOT="$ROOT_DIR"
@@ -29,6 +33,7 @@ BASE_COMPOSE=(docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compo
 SANDBOX_COMPOSE=(-f "$ROOT_DIR/compose.sandbox.yaml")
 CONTROL_COMPOSE=(-f "$ROOT_DIR/compose.control.yaml")
 ORCHESTRATOR_COMPOSE=(-f "$ROOT_DIR/compose.orchestrator.yaml")
+CLAUDE_CONTEXT_COMPOSE=(-f "$ROOT_DIR/compose.claude-context.yaml")
 WORKER_KINDS=(codex claude opencode)
 ALL_WORKER_COMPOSE=()
 for worker_kind in "${WORKER_KINDS[@]}"; do
@@ -65,11 +70,23 @@ Worker actions:
   login [CLI login args]       Interactive account login (operator only)
   logout                       Remove this worker's stored login
   status                       Show version, model, and login state
+  rights                       Show this worker's effective feature policy
+  capabilities                 List the worker feature switches
+  enable FEATURE [...]         Enable worker features for its next task
+  disable FEATURE [...]        Disable worker features for its next task
+  reset                        Return this worker to model-only operation
   model [MODEL|none]           Show, set, or clear the worker model
   start | stop                 Start or stop the isolated worker service
   run "prompt"                Operator test request through its Unix socket
 
 Worker kinds: codex, claude, opencode
+
+Worker features (separate policy per worker):
+  tools          built-in file/search tools; Codex maps this to read-only shell
+  commandline    command execution and workspace writes (requires tools)
+  skills         inject approved SKILL.md files from worker-context
+  agents-md      inject the protected worker AGENTS.md
+  claude-md      inject the protected worker CLAUDE.md
 
 Capabilities:
   files          read/write/search only in runtime/workspace
@@ -80,6 +97,7 @@ Capabilities:
   planning       in-session todo and clarify tools
   shell-network  network egress for commandline/code (separate modifier)
   orchestrator   load the opt-in AGENTS.md explainer/orchestrator context
+  claude-md      load the opt-in protected CLAUDE.md context independently
   hermesctl-direct  let Hermes manage next-session rights through the CLI
                     (requires skills + commandline)
   hermesctl-mcp  let Hermes manage next-session rights through scoped MCP
@@ -91,7 +109,7 @@ Capabilities:
                  two scoped MCP tools for exactly one isolated worker
                  (each requires skills)
 
-Aliases: tools=file(s), shell/terminal=commandline
+Aliases: tools=file(s), shell/terminal=commandline, agents-md=orchestrator
 EOF
 }
 
@@ -103,12 +121,18 @@ die() {
 ensure_layout() {
   if [[ "$CONTROL_ONLY" == 1 ]]; then
     [[ -f "$CAPABILITIES_FILE" ]] || die 'capability control file is not mounted'
+    local controlled_worker
+    for controlled_worker in "${WORKER_KINDS[@]}"; do
+      [[ -f "$WORKER_CONTROL_DIR/$controlled_worker/capabilities" ]] || \
+        die "worker control file is not mounted: $controlled_worker"
+    done
     return
   fi
   mkdir -p "$STATE_DIR" "$WORKSPACE_DIR" "$STATE_DIR/skills"
   local worker
   for worker in "${WORKER_KINDS[@]}"; do
     mkdir -p \
+      "$WORKER_CONTROL_DIR/$worker" \
       "$RUNTIME_DIR/workers/$worker/state" \
       "$RUNTIME_DIR/workers/$worker/workspace" \
       "$RUNTIME_DIR/workers/$worker/socket"
@@ -116,10 +140,16 @@ ensure_layout() {
       : > "$RUNTIME_DIR/workers/$worker/workspace/.gitkeep"
     fi
     chmod 700 \
+      "$WORKER_CONTROL_DIR/$worker" \
       "$RUNTIME_DIR/workers/$worker/state" \
       "$RUNTIME_DIR/workers/$worker/socket"
     chmod 750 "$RUNTIME_DIR/workers/$worker/workspace"
+    if [[ ! -f "$WORKER_CONTROL_DIR/$worker/capabilities" ]]; then
+      : > "$WORKER_CONTROL_DIR/$worker/capabilities"
+    fi
+    chmod 600 "$WORKER_CONTROL_DIR/$worker/capabilities"
   done
+  chmod 700 "$RUNTIME_DIR/control" "$WORKER_CONTROL_DIR"
   mkdir -p \
     "$RUNTIME_DIR/workers/codex/state/.codex" \
     "$RUNTIME_DIR/workers/claude/state/.claude" \
@@ -152,6 +182,158 @@ ensure_layout() {
     cp -a "$PROJECT_SKILLS_DIR/." "$STATE_DIR/skills/"
   fi
   chmod 600 "$CAPABILITIES_FILE" "$STATE_DIR/.no-bundled-skills" "$STATE_DIR/SOUL.md"
+}
+
+worker_capabilities_file() {
+  local worker=$1
+  printf '%s\n' "$WORKER_CONTROL_DIR/$worker/capabilities"
+}
+
+raw_worker_features() {
+  local worker=$1
+  local feature_file
+  feature_file=$(worker_capabilities_file "$worker")
+  if [[ -f "$feature_file" ]]; then
+    tr '\n' ',' < "$feature_file"
+  fi
+}
+
+worker_policy_json() {
+  local worker=$1
+  local raw=${2-$(raw_worker_features "$worker")}
+  python3 - "$worker" "$raw" "$POLICY_MODULE_DIR" "$WORKER_POLICY_MODULE_NAME" <<'PY'
+import importlib
+import json
+import sys
+
+worker, raw, module_dir, module_name = sys.argv[1:]
+sys.path.insert(0, module_dir)
+policy_module = importlib.import_module(module_name)
+try:
+    normalized_worker = policy_module.normalize_worker(worker)
+    policy = policy_module.parse_worker_features(raw)
+except policy_module.WorkerPolicyError as exc:
+    print(f"hermesctl: {exc}", file=sys.stderr)
+    raise SystemExit(64)
+
+print(json.dumps({
+    "worker": normalized_worker,
+    "features": policy.features,
+    "tools": policy.tools,
+    "commandline": policy.commandline,
+    "skills": policy.skills,
+    "agents_md": policy.agents_md,
+    "claude_md": policy.claude_md,
+}))
+PY
+}
+
+commit_worker_features() {
+  local worker=$1
+  local content=${2-}
+  local feature_file feature_dir temporary
+  feature_file=$(worker_capabilities_file "$worker")
+  feature_dir=$(dirname "$feature_file")
+  [[ -d "$feature_dir" ]] || die "worker control directory is unavailable: $worker"
+  temporary=$(mktemp "$feature_dir/.capabilities.XXXXXX")
+  if [[ -n "$content" ]]; then
+    printf '%s\n' "$content" > "$temporary"
+  fi
+  chmod 600 "$temporary"
+  mv "$temporary" "$feature_file"
+}
+
+write_worker_features() {
+  local worker=$1
+  local action=$2
+  shift 2
+  (($# > 0)) || die "worker $action needs at least one feature"
+  local current normalized
+  current=$(raw_worker_features "$worker")
+  normalized=$(python3 - "$action" "$current" "$POLICY_MODULE_DIR" \
+    "$WORKER_POLICY_MODULE_NAME" "$@" <<'PY'
+import importlib
+import sys
+
+action, current, module_dir, module_name = sys.argv[1:5]
+requested = sys.argv[5:]
+sys.path.insert(0, module_dir)
+policy_module = importlib.import_module(module_name)
+try:
+    current_values = set(policy_module.parse_worker_features(current).features)
+    requested_values = {
+        policy_module.normalize_worker_feature(value) for value in requested
+    }
+    if action == "enable":
+        result = current_values | requested_values
+    else:
+        result = current_values - requested_values
+    policy = policy_module.parse_worker_features(",".join(sorted(result)))
+except policy_module.WorkerPolicyError as exc:
+    print(f"hermesctl: {exc}", file=sys.stderr)
+    raise SystemExit(64)
+print("\n".join(policy.features))
+PY
+  )
+  commit_worker_features "$worker" "$normalized"
+}
+
+show_worker_rights() {
+  local worker=$1
+  local json features
+  json=$(worker_policy_json "$worker")
+  features=$(policy_field features "$json")
+  printf 'Worker rights:    %s\n' "${features:-none (model-only)}"
+  printf 'Tools:            %s\n' "$(policy_field tools "$json")"
+  printf 'Commandline:      %s\n' "$(policy_field commandline "$json")"
+  printf 'Skills:           %s\n' "$(policy_field skills "$json")"
+  printf 'AGENTS.md:        %s\n' "$(policy_field agents_md "$json")"
+  printf 'CLAUDE.md:        %s\n' "$(policy_field claude_md "$json")"
+  case "$worker" in
+    codex)
+      if [[ $(policy_field tools "$json") == false ]]; then
+        printf 'Tools mapping:    Codex shell tool disabled\n'
+      elif [[ $(policy_field commandline "$json") == true ]]; then
+        printf 'Tools mapping:    Codex shell tool with workspace-write sandbox\n'
+      else
+        printf 'Tools mapping:    Codex shell tool in read-only sandbox\n'
+      fi
+      ;;
+    claude)
+      if [[ $(policy_field tools "$json") == false ]]; then
+        printf 'Tools mapping:    all Claude built-in tools disabled\n'
+      elif [[ $(policy_field commandline "$json") == true ]]; then
+        printf 'Tools mapping:    Read, Glob, Grep, Edit, Write plus Bash\n'
+      else
+        printf 'Tools mapping:    Read, Glob, Grep, Edit, Write; Bash disabled\n'
+      fi
+      ;;
+    opencode)
+      if [[ $(policy_field tools "$json") == false ]]; then
+        printf 'Tools mapping:    all OpenCode file and Bash permissions denied\n'
+      elif [[ $(policy_field commandline "$json") == true ]]; then
+        printf 'Tools mapping:    read, glob, grep, edit plus bash\n'
+      else
+        printf 'Tools mapping:    read, glob, grep, edit; bash denied\n'
+      fi
+      ;;
+  esac
+  printf 'Worker egress:    provider network exists independently of Hermes shell-network\n'
+  printf 'Applies:          next task run by this worker\n'
+}
+
+show_worker_capabilities() {
+  cat <<'EOF'
+Worker features:
+  tools          built-in file/search tools; Codex uses read-only shell
+  commandline    command execution and workspace writes (requires tools)
+  skills         approved worker-context/<worker>/skills/*/SKILL.md
+  agents-md      protected worker-context/<worker>/AGENTS.md
+  claude-md      protected worker-context/<worker>/CLAUDE.md
+
+Aliases: tool-use=tools, shell/terminal=commandline,
+         AGENTS.md=agents-md, CLAUDE.md=claude-md
+EOF
 }
 
 raw_capabilities() {
@@ -188,6 +370,8 @@ print(json.dumps({
       "mcp_control": "hermesctl-mcp" in policy.capabilities,
       "enable_mcp": policy.enable_mcp,
     "load_orchestrator": policy.load_orchestrator,
+    "load_claude_context": policy.load_claude_context,
+    "load_context_files": policy.load_context_files,
     "direct_workers": policy.direct_workers,
     "mcp_workers": policy.mcp_workers,
     "workers": policy.workers,
@@ -293,6 +477,9 @@ compose_for_policy() {
   if [[ $(policy_field load_orchestrator "$json") == true ]]; then
     printf '%s\0' "${ORCHESTRATOR_COMPOSE[@]}"
   fi
+  if [[ $(policy_field load_claude_context "$json") == true ]]; then
+    printf '%s\0' "${CLAUDE_CONTEXT_COMPOSE[@]}"
+  fi
   local workers worker
   workers=$(policy_field workers "$json")
   if [[ -n "$workers" ]]; then
@@ -343,6 +530,35 @@ worker_command() {
   if (($# > 0)); then
     shift
   fi
+
+  case "$action" in
+    rights)
+      (($# == 0)) || die 'worker rights accepts no additional arguments'
+      show_worker_rights "$worker"
+      return
+      ;;
+    capabilities)
+      (($# == 0)) || die 'worker capabilities accepts no additional arguments'
+      show_worker_capabilities
+      return
+      ;;
+    enable|disable)
+      write_worker_features "$worker" "$action" "$@"
+      show_worker_rights "$worker"
+      return
+      ;;
+    reset)
+      (($# == 0)) || die 'worker reset accepts no additional arguments'
+      commit_worker_features "$worker" ''
+      show_worker_rights "$worker"
+      return
+      ;;
+  esac
+
+  if [[ "$CONTROL_ONLY" == 1 ]]; then
+    die "worker action is unavailable through model-facing hermesctl: $action"
+  fi
+
   local service="worker-$worker"
   local -a compose_command=()
   while IFS= read -r -d '' item; do
@@ -402,6 +618,7 @@ worker_command() {
         "$worker" "$model" \
         "$RUNTIME_DIR/workers/$worker/state" \
         "$RUNTIME_DIR/workers/$worker/workspace"
+      show_worker_rights "$worker"
       set +e
       case "$worker" in
         codex)
@@ -473,8 +690,13 @@ show_status() {
   toolsets=$(policy_field toolsets "$json")
   printf 'Capabilities:      %s\n' "${caps:-none (pure chat)}"
   printf 'Hermes toolsets:   %s\n' "${toolsets:-none}"
-  if [[ $(policy_field load_orchestrator "$json") == true ]]; then
-    printf 'Orchestrator:      AGENTS.md loaded (opt-in)\n'
+  if [[ $(policy_field load_orchestrator "$json") == true ]] && \
+     [[ $(policy_field load_claude_context "$json") == true ]]; then
+    printf 'Context files:     protected AGENTS.md and CLAUDE.md loaded (opt-in)\n'
+  elif [[ $(policy_field load_orchestrator "$json") == true ]]; then
+    printf 'Context files:     protected AGENTS.md loaded (opt-in)\n'
+  elif [[ $(policy_field load_claude_context "$json") == true ]]; then
+    printf 'Context files:     protected CLAUDE.md loaded (opt-in)\n'
   else
     printf 'Context files:     ignored (AGENTS.md, SOUL.md, .hermes.md, CLAUDE.md)\n'
   fi
@@ -497,7 +719,7 @@ fi
 
 if [[ "$CONTROL_ONLY" == 1 ]]; then
   case "$command" in
-    enable|disable|reset|status|capabilities|help|-h|--help) ;;
+    enable|disable|reset|status|capabilities|worker|help|-h|--help) ;;
     *) die "command is unavailable through model-facing hermesctl: $command" ;;
   esac
 fi
@@ -571,8 +793,14 @@ EOF
   verify)
     ensure_layout
     verify_raw_before=$(raw_capabilities)
+    verify_worker_raw_before=''
+    for verify_worker in "${WORKER_KINDS[@]}"; do
+      verify_worker_raw_before+="$verify_worker:$(raw_worker_features "$verify_worker");"
+    done
     python3 -m unittest discover -s "$ROOT_DIR/tests" -v
     "${BASE_COMPOSE[@]}" config --quiet
+    "${BASE_COMPOSE[@]}" "${ORCHESTRATOR_COMPOSE[@]}" \
+      "${CLAUDE_CONTEXT_COMPOSE[@]}" config --quiet
     "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" config --quiet
     "${BASE_COMPOSE[@]}" build hermes
     "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" build \
@@ -613,10 +841,27 @@ EOF
     HERMES_CAPABILITIES='orchestrator' \
       "${BASE_COMPOSE[@]}" "${ORCHESTRATOR_COMPOSE[@]}" run --rm \
       -e HERMES_CAPABILITIES=orchestrator \
-      hermes hermes-naked --orchestrator-probe
+      hermes hermes-naked --context-probe
+    printf '\nIndependent CLAUDE.md context probe (temporary policy):\n'
+    HERMES_CAPABILITIES='claude-md' \
+      "${BASE_COMPOSE[@]}" "${CLAUDE_CONTEXT_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=claude-md \
+      hermes hermes-naked --context-probe
+    printf '\nCombined AGENTS.md + CLAUDE.md context probe (temporary policy):\n'
+    HERMES_CAPABILITIES='orchestrator,claude-md' \
+      "${BASE_COMPOSE[@]}" "${ORCHESTRATOR_COMPOSE[@]}" \
+      "${CLAUDE_CONTEXT_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=orchestrator,claude-md \
+      hermes hermes-naked --context-probe
     [[ $(raw_capabilities) == "$verify_raw_before" ]] || \
       die 'verify unexpectedly changed the configured capabilities'
-    printf '\nConfigured capabilities remained unchanged.\n'
+    verify_worker_raw_after=''
+    for verify_worker in "${WORKER_KINDS[@]}"; do
+      verify_worker_raw_after+="$verify_worker:$(raw_worker_features "$verify_worker");"
+    done
+    [[ "$verify_worker_raw_after" == "$verify_worker_raw_before" ]] || \
+      die 'verify unexpectedly changed a worker profile'
+    printf '\nConfigured Hermes capabilities and worker profiles remained unchanged.\n'
     ;;
   help|-h|--help)
     usage

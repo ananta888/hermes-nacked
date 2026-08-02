@@ -31,7 +31,15 @@ Do not invoke both paths for the same task.
 ## Rules
 
 - Check status before the first delegation and stop if the worker is not
-  authenticated or unavailable.
+  authenticated or unavailable. Read the returned `policy`: reachability does
+  not imply tool, commandline, skill, `AGENTS.md`, or `CLAUDE.md` rights.
+- If the task needs a disabled worker feature, explain the smallest required
+  change and its risk. Change it only after an explicit user request through
+  the hermesctl MCP/direct skill; otherwise give the operator command
+  `./hermesctl worker claude enable <feature>`.
+- `tools` exposes Claude's explicit file-tool allowlist; `commandline` adds
+  Bash and requires `tools`. Safe mode blocks every other customization; the
+  protected contexts and approved SKILL.md bodies are injected explicitly.
 - Tell the user that changes occur under
   `runtime/workers/claude/workspace`, not in the Hermes workspace.
 - Include the goal, relevant constraints, expected verification, and desired

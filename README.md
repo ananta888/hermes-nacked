@@ -116,6 +116,10 @@ Referenzen:
 # Skills: Liste/Ansicht/Verwaltung; weiterhin keine Bundled Skills
 ./hermesctl enable skills
 
+# Hermes-Kontexte unabhängig: agents-md ist Alias für orchestrator
+./hermesctl enable agents-md
+./hermesctl enable claude-md
+
 # Webzugriff unabhängig aktivieren
 ./hermesctl enable web
 
@@ -140,7 +144,8 @@ Installiert bedeutet nicht freigegeben: Ohne `skills` erscheinen sie weder im
 Skill-Index noch als Skill-Tools.
 
 Alle Schalter zeigt `./hermesctl capabilities`. `tools` ist ein Alias für
-`files`, `shell` und `terminal` sind Aliase für `commandline`.
+`files`, `shell` und `terminal` sind Aliase für `commandline`; `agents-md` und
+`AGENTS.md` sind Aliase für `orchestrator`.
 
 Skills können durch den Operator installiert werden, ohne sie dem Agenten
 sofort freizugeben:
@@ -153,8 +158,9 @@ sofort freizugeben:
 
 ## Hermes als eigener Orchestrator
 
-Die Orchestrator-Anweisungen in `AGENTS.md`, die Skills und die zwei
-Steuerungswege sind getrennte Berechtigungen. Der Nullzustand lädt keine davon.
+Die Orchestrator-Anweisungen in `AGENTS.md`, der optionale `CLAUDE.md`-Kontext,
+die Skills und die zwei Steuerungswege sind getrennte Berechtigungen. Der
+Nullzustand lädt keine davon.
 
 Direkter Weg über das eingeschränkte `hermesctl` in der netzlosen
 Command-Sandbox:
@@ -178,8 +184,12 @@ Beide Wege gleichzeitig:
 ./hermesctl enable orchestrator skills commandline hermesctl-direct hermesctl-mcp
 ```
 
-`orchestrator` lädt nur die projektgebundene `AGENTS.md` und gibt selbst kein
-Tool frei. `hermesctl-direct` benötigt `skills` und `commandline`.
+`orchestrator` beziehungsweise sein Alias `agents-md` lädt nur die
+projektgebundene, geschützte `AGENTS.md`; `claude-md` lädt unabhängig die
+geschützte Root-`CLAUDE.md`. Beide können gleichzeitig aktiv sein, geben aber
+selbst kein Tool frei. Anders als bei Hermes' regulärer Priorität „erste Datei
+gewinnt“ injiziert die Hülle dann beide explizit. `hermesctl-direct` benötigt
+`skills` und `commandline`.
 `hermesctl-mcp` benötigt `skills` und registriert ausschließlich:
 
 - `mcp__hermesctl__status`
@@ -187,6 +197,10 @@ Tool frei. `hermesctl-direct` benötigt `skills` und `commandline`.
 - `mcp__hermesctl__enable`
 - `mcp__hermesctl__disable`
 - `mcp__hermesctl__reset`
+- `mcp__hermesctl__worker_rights`
+- `mcp__hermesctl__worker_enable`
+- `mcp__hermesctl__worker_disable`
+- `mcp__hermesctl__worker_reset`
 
 Beide `hermesctl-*`-Capabilities sind Meta-Berechtigungen: Ein damit
 ausgestattetes Modell kann die Policy für die nächste Sitzung verändern. Eine
@@ -204,11 +218,17 @@ drei CLIs in seinen eigenen Container zu installieren. Jeder Worker besitzt:
 - einen eigenen Login- und Konfigurations-State,
 - einen eigenen Workspace,
 - einen eigenen Unix-Socket ohne TCP-Port,
-- einen eigenen Skill sowie getrennte Direct- und MCP-Schalter.
+- einen eigenen Skill sowie getrennte Direct- und MCP-Schalter,
+- ein eigenes, zunächst leeres Worker-Rechteprofil,
+- read-only eingebundene, operatorgeprüfte Kontext- und Skill-Dateien.
 
 Die Verzeichnisse liegen unter `runtime/workers/<worker>/state`,
 `runtime/workers/<worker>/workspace` und `runtime/workers/<worker>/socket`.
 Kein Worker sieht den Hermes-Workspace oder den State eines anderen Workers.
+Die Rechteprofile liegen davon getrennt unter
+`runtime/control/workers/<worker>/capabilities`. Der Worker sieht nur sein
+eigenes Profil read-only und kann sich daher auch mit Shell-Recht nicht selbst
+hochstufen.
 
 ### Installation, Login und Modell
 
@@ -255,6 +275,78 @@ Offizielle Referenzen:
 - [OpenCode: Provider und Account-Grenzen](https://opencode.ai/docs/providers/)
 - [OpenCode: CLI](https://opencode.ai/docs/cli/)
 
+### Worker-Fähigkeiten einzeln schalten
+
+Ein angemeldeter und erreichbarer Worker beginnt weiterhin **model-only**. Er
+kann antworten, besitzt aber weder Datei-/Shell-Tools noch Skills oder
+Projektkontext. Dieses separate Profil ist die Worker-Spec; jeder Schalter
+gilt nur für genau einen Worker:
+
+```bash
+# Erst ansehen
+./hermesctl worker codex rights
+
+# Datei-/Suchwerkzeuge ohne allgemeine Commandline
+./hermesctl worker codex enable tools
+
+# Commandline separat; sie benötigt tools
+./hermesctl worker codex enable commandline
+
+# Drei voneinander unabhängige Kontextquellen
+./hermesctl worker codex enable skills
+./hermesctl worker codex enable agents-md
+./hermesctl worker codex enable claude-md
+
+# Einzeln entziehen oder nur diesen Worker vollständig zurücksetzen
+./hermesctl worker codex disable claude-md
+./hermesctl worker codex reset
+```
+
+Die gleichen Befehle gelten für `claude` und `opencode`. Änderungen greifen
+beim **nächsten Auftrag dieses Workers**; weder ein Container-Neustart noch
+eine neue Hermes-Sitzung ist dafür nötig. Ein schon laufender Worker-Auftrag
+behält seinen beim Start gelesenen Snapshot.
+
+Die geschützten Quellen sind direkt und übersichtlich editierbar:
+
+```text
+worker-context/<worker>/AGENTS.md
+worker-context/<worker>/CLAUDE.md
+worker-context/<worker>/skills/<skill>/SKILL.md
+```
+
+Sie werden read-only in genau den passenden Worker gemountet. `skills`
+injiziert die genehmigten `SKILL.md`-Anweisungen, während die nativen,
+dynamischen Skill-/Plugin-Oberflächen gesperrt bleiben. So bleibt ein Skill
+auch dann gezielt kontrollierbar, wenn die drei CLIs ihre nativen Skill-Systeme
+unterschiedlich behandeln. Automatisch erkennbare Kontext- oder Skill-Dateien
+im privaten Workspace führen bei ausgeschaltetem zugehörigem Feature zu einem
+fail-closed Abbruch statt zu einem stillen Policy-Bypass.
+
+Die technische Abbildung ist bewusst nicht künstlich gleichgezogen:
+
+| Worker | `tools` | `commandline` | Kontext-Sperre |
+|---|---|---|---|
+| Codex CLI | Codex besitzt kein separates File-Tool; sein Shell-Tool läuft deshalb zunächst in `read-only` | schaltet denselben Toolpfad auf `workspace-write` | automatische Regeln aus, freigegebene Dateien als Developer-Instructions |
+| Claude Code | exakt `Read, Glob, Grep, Edit, Write` | fügt ausschließlich `Bash` hinzu | Safe Mode, leere MCP-Konfiguration, freigegebene Dateien explizit angehängt |
+| OpenCode | nur `read, glob, grep, edit` | erlaubt zusätzlich `bash` | Project-Config/externe Skills aus, alle übrigen Permissions explizit `deny` |
+
+Bei Codex bedeutet `tools` daher technisch weiterhin die Ausführung
+lesender Shell-Kommandos; eine echte Trennung in native Read-/Edit- und
+Shell-Tools bietet Codex CLI derzeit nicht. Bei Claude und OpenCode sind
+Dateiwerkzeuge und Bash tatsächlich getrennte Tooloberflächen.
+
+Offizielle Details zu diesen Unterschieden:
+
+- [Codex: Konfiguration, Sandbox und Features](https://developers.openai.com/codex/config-reference/)
+- [Codex: AGENTS.md und Skills](https://developers.openai.com/codex/concepts/customization)
+- [Claude Code: CLI-Schalter](https://code.claude.com/docs/en/cli-reference)
+- [Claude Code: CLAUDE.md und AGENTS.md-Import](https://code.claude.com/docs/en/memory)
+- [Claude Code: Skills](https://code.claude.com/docs/en/skills)
+- [OpenCode: Permissions](https://opencode.ai/docs/permissions/)
+- [OpenCode: AGENTS.md/CLAUDE.md-Regeln](https://opencode.ai/docs/rules/)
+- [OpenCode: Skills](https://opencode.ai/docs/skills/)
+
 ### Hermes-Zugriff einzeln freigeben
 
 MCP ist der engere Weg und benötigt keine allgemeine Commandline-Capability:
@@ -288,11 +380,26 @@ registriert, zum Beispiel:
 - `mcp__codex_worker__run`
 
 Der direkte Skill verwendet entsprechend nur `agent-worker codex status` und
-`agent-worker codex run "..."`. `run` ist trotz der kleinen RPC-Oberfläche
-eine starke Berechtigung: Die dahinterliegende Coding-CLI darf im privaten
-Worker-Workspace Dateien ändern und Befehle ausführen. Der Worker benötigt
-außerdem unabhängig von `shell-network` Egress zu seinem Modellprovider; die
-Docker-Bridge begrenzt dieses Netz technisch nicht auf Provider-Domains.
+`agent-worker codex run "..."`. `run` allein öffnet nur den modell-only Worker;
+seine tatsächlichen Aktionsrechte kommen aus dem separaten Worker-Profil.
+Insbesondere `tools` und `commandline` sind starke Berechtigungen. Der Worker
+benötigt außerdem unabhängig von `shell-network` Egress zu seinem
+Modellprovider; die Docker-Bridge begrenzt dieses Netz technisch nicht auf
+Provider-Domains.
+
+Soll Hermes die Worker-Profile selbst orchestrieren, braucht es zusätzlich
+`hermesctl-mcp` oder `hermesctl-direct`. Beispiel über den engeren MCP-Weg:
+
+```bash
+./hermesctl enable orchestrator skills hermesctl-mcp codex-mcp
+./hermesctl chat
+```
+
+Hermes prüft dann zunächst `mcp__hermesctl__worker_rights`, erklärt Wirkung
+und Risiko und darf erst nach ausdrücklicher Benutzerfreigabe beispielsweise
+`mcp__hermesctl__worker_enable` mit `worker="codex"` und
+`features=["tools"]` ausführen. Login, Modellwahl und Containerverwaltung
+bleiben auch dabei reine Operator-Aktionen.
 
 ## Was technisch erzwungen wird
 
@@ -302,9 +409,11 @@ Docker-Bridge begrenzt dieses Netz technisch nicht auf Provider-Domains.
 - Jeder Neuaufbau der Toolschemas wird auf die freigegebenen Toolsets gepinnt.
   Auch `/tools` oder ein später Refresh kann die Policy nicht erweitern.
 - `HERMES_IGNORE_RULES=1` unterbindet Kontextdateien und persistentes Memory.
-  Nur `orchestrator` hebt diese Sperre für die read-only eingebundene
-  Projekt-`AGENTS.md` auf. Memory bleibt laut Konfiguration aus; eine leere
-  `SOUL.md` verhindert zusätzlich das Seeding einer eigenen Persona.
+  Nur `orchestrator`/`agents-md` beziehungsweise `claude-md` heben diese Sperre
+  für ihre exakten, read-only unter `/policy-context` eingebundenen Quellen
+  auf. Die Hülle injiziert nur die ausgewählten Dateien und ignoriert
+  gleichnamige Workspace-Dateien. Memory bleibt laut Konfiguration aus; eine
+  leere `SOUL.md` verhindert zusätzlich das Seeding einer eigenen Persona.
 - `.no-bundled-skills` verhindert, dass der offizielle Docker-Start die
   mitgelieferten Skills synchronisiert.
 - `HERMES_SAFE_MODE=1` deaktiviert Plugin-Discovery, Shell-Hooks und MCP. Nur
@@ -320,6 +429,10 @@ Docker-Bridge begrenzt dieses Netz technisch nicht auf Provider-Domains.
 - Der Docker-Socket wird nur in den Hermes-Controller gemountet, wenn eine
   Sandbox-Fähigkeit tatsächlich aktiv ist. Er wird nie in den model-facing
   Commandline-Container weitergereicht.
+- Jeder Worker liest vor jedem Auftrag sein separates Profil aus einem
+  read-only Control-Mount. Die CLI wird daraus mit einer exakten Tool-/Permission-
+  Konfiguration gestartet; unfreigegebene automatische Workspace-Kontexte
+  lassen den Auftrag fail-closed abbrechen.
 
 Die effektive Policy lässt sich ohne Modell/API-Aufruf prüfen:
 
@@ -334,11 +447,11 @@ Die effektive Policy lässt sich ohne Modell/API-Aufruf prüfen:
 | Ziel | Persönlicher Agent, der über Sitzungen wächst | Kontrollierte Freigabe nach Least Privilege |
 | Start-Tools | `hermes-cli` umfasst standardmäßig u. a. Files, Terminal, Web, Skills, Memory und Delegation | Kein einziges model-facing Tool |
 | Skills | Bundled Skills werden synchronisiert; Agent kann Skills nutzen/entwickeln | Kein Seeding; Tool und Mount separat abschaltbar |
-| Kontext | Projektdateien und `SOUL.md` werden automatisch in den Systemprompt geladen | Standardmäßig ignoriert; nur die Orchestrator-`AGENTS.md` ist separat opt-in |
+| Kontext | Projektdateien und `SOUL.md` werden automatisch in den Systemprompt geladen | Standardmäßig ignoriert; geschützte `AGENTS.md` und `CLAUDE.md` sind separat opt-in |
 | Memory | Langfristiges Lernen/Profil ist Kernfunktion | Deaktiviert und nicht geladen |
 | Shell | Standardmäßig lokales Backend möglich | Zweiter Container, kein Host-Mount außer Workspace, zunächst air-gapped |
 | Erweiterungen | Plugins, MCP und Hooks erweitern den Agenten dynamisch | Standardmäßig blockiert; optional nur lokal fest verdrahtete Hermesctl-/Worker-MCPs |
-| Coding-Agenten | Delegation kann Teil des allgemeinen Agenten-Ökosystems sein | Drei separat gepinnte Container, States, Workspaces, Skills, Sockets und Rechte |
+| Coding-Agenten | Delegation kann Teil des allgemeinen Agenten-Ökosystems sein | Drei separat gepinnte Container, States, Workspaces, Sockets sowie je fünf separat schaltbare Worker-Rechte |
 | Bedienung | Maximale Autonomie und Komfort | Explizite, auditierbare Schalter mit mehr Bedienaufwand |
 
 Der Vorteil von Hermes Naked ist die kleine und nachvollziehbare Angriffsfläche:

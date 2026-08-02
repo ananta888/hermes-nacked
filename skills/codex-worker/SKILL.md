@@ -31,7 +31,15 @@ Do not invoke both paths for the same task.
 ## Rules
 
 - Check status before the first delegation and stop if the worker is not
-  authenticated or unavailable.
+  authenticated or unavailable. Read the returned `policy`: reachability does
+  not imply tool, commandline, skill, `AGENTS.md`, or `CLAUDE.md` rights.
+- If the task needs a disabled worker feature, explain the smallest required
+  change and its risk. Change it only after an explicit user request through
+  the hermesctl MCP/direct skill; otherwise give the operator command
+  `./hermesctl worker codex enable <feature>`.
+- Codex has no separate native file-tool surface. Here `tools` enables its
+  shell tool under a read-only sandbox; `commandline` additionally permits the
+  workspace-write sandbox and requires `tools`.
 - Tell the user that changes occur under
   `runtime/workers/codex/workspace`, not in the Hermes workspace.
 - Include the goal, relevant constraints, expected verification, and desired

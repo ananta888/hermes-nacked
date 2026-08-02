@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import stat
 import sys
 
 sys.path.insert(0, "/usr/local/lib")
@@ -27,6 +29,10 @@ HERMESCTL_MCP_TOOLS = {
     "mcp__hermesctl__enable",
     "mcp__hermesctl__disable",
     "mcp__hermesctl__reset",
+    "mcp__hermesctl__worker_rights",
+    "mcp__hermesctl__worker_enable",
+    "mcp__hermesctl__worker_disable",
+    "mcp__hermesctl__worker_reset",
 }
 WORKER_MCP_TOOLS = {
     worker: {
@@ -52,6 +58,53 @@ def _reject_policy_bypasses(args: list[str]) -> None:
         )
         if flag in BLOCKED_FLAGS or attached_short_override:
             _fail(f"{flag} is controlled by hermesctl and cannot be overridden")
+
+
+def _install_context_policy(policy) -> None:
+    """Inject only the exact protected context files selected by policy."""
+    if not policy.load_context_files:
+        return
+
+    from agent import prompt_builder
+
+    selected: list[tuple[str, Path]] = []
+    context_root = Path("/policy-context")
+    if policy.load_orchestrator:
+        selected.append(("AGENTS.md", context_root / "AGENTS.md"))
+    if policy.load_claude_context:
+        selected.append(("CLAUDE.md", context_root / "CLAUDE.md"))
+
+    def guarded_context_prompt(
+        cwd=None,
+        skip_soul=False,
+        context_length=None,
+        allow_install_tree_fallback=False,
+    ):
+        del cwd, skip_soul, context_length, allow_install_tree_fallback
+        sections: list[str] = []
+        for label, source in selected:
+            try:
+                metadata = source.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    _fail(f"protected {label} context is not a regular file")
+                raw = source.read_bytes()
+            except OSError as exc:
+                _fail(f"protected {label} context is unavailable: {exc}")
+            if len(raw) > 64 * 1024:
+                _fail(f"protected {label} context exceeds 64 KiB")
+            try:
+                content = raw.decode("utf-8", errors="strict").strip()
+            except UnicodeDecodeError:
+                _fail(f"protected {label} context is not valid UTF-8")
+            sections.append(f"## {label}\n\n{content}")
+        return (
+            "# Project Context\n\n"
+            "The following operator-protected context files have been "
+            "explicitly enabled and should be followed:\n\n"
+            + "\n\n".join(sections)
+        )
+
+    prompt_builder.build_context_files_prompt = guarded_context_prompt
 
 
 def _install_remote_mount_policy(policy) -> None:
@@ -88,12 +141,21 @@ def _apply_terminal_policy_env(policy) -> None:
                 f"{host_root}/container/policy.py:"
                 "/usr/local/lib/hermesctl_policy.py:ro"
             ),
+            (
+                f"{host_root}/container/worker_policy.py:"
+                "/usr/local/lib/hermes_worker_policy.py:ro"
+            ),
+            (
+                f"{host_root}/runtime/control/workers:"
+                "/control/workers:rw"
+            ),
         ]
         sandbox_env.update(
             {
                 "HERMESCTL_ROOT": "/control",
                 "HERMESCTL_CAPABILITIES_FILE": "/control/.hermes-capabilities",
                 "HERMESCTL_POLICY_DIR": "/usr/local/lib",
+                "HERMESCTL_WORKER_CONTROL_DIR": "/control/workers",
                 "HERMESCTL_CONTROL_ONLY": "1",
             }
         )
@@ -161,6 +223,10 @@ def _install_extension_policy(policy) -> None:
                     "enable",
                     "disable",
                     "reset",
+                    "worker_rights",
+                    "worker_enable",
+                    "worker_disable",
+                    "worker_reset",
                 ],
                 "resources": False,
                 "prompts": False,
@@ -290,6 +356,8 @@ def _probe_sandbox(policy) -> None:
             "test -x /usr/local/bin/hermesctl; "
             "hermesctl status >/tmp/hermesctl-status; "
             "grep -q '^Capabilities:' /tmp/hermesctl-status; "
+            "hermesctl worker codex rights >/tmp/codex-rights; "
+            "grep -q '^Worker rights:' /tmp/codex-rights; "
             "printf 'hermesctl=mounted\\n'; "
             if policy.direct_control
             else "test ! -e /control/.hermes-capabilities; printf 'hermesctl=absent\\n'; "
@@ -402,16 +470,21 @@ def _probe_mcp(policy) -> None:
                 1,
             )
         checked_status: list[str] = []
-        status_tools = []
+        status_tools: list[tuple[str, dict[str, str]]] = []
         if "hermesctl-mcp" in policy.capabilities:
-            status_tools.append("mcp__hermesctl__status")
+            status_tools.append(("mcp__hermesctl__status", {}))
+            status_tools.extend(
+                ("mcp__hermesctl__worker_rights", {"worker": worker})
+                for worker in ("codex", "claude", "opencode")
+            )
         status_tools.extend(
-            f"mcp__{worker}_worker__status" for worker in policy.mcp_workers
+            (f"mcp__{worker}_worker__status", {})
+            for worker in policy.mcp_workers
         )
-        for tool_name in status_tools:
+        for tool_name, arguments in status_tools:
             status_result = model_tools.handle_function_call(
                 tool_name,
-                {},
+                arguments,
                 task_id="hermes-naked-mcp-probe",
                 user_task="policy verification",
                 enabled_tools=sorted(visible),
@@ -434,22 +507,27 @@ def _probe_mcp(policy) -> None:
         shutdown_mcp_servers()
 
 
-def _probe_orchestrator(policy) -> None:
-    if not policy.load_orchestrator:
-        _fail("orchestrator probe requires orchestrator")
+def _probe_context(policy) -> None:
+    if not policy.load_context_files:
+        _fail("context probe requires orchestrator or claude-md")
 
     from agent.prompt_builder import build_context_files_prompt
 
     workspace = os.environ.get("TERMINAL_CWD", "")
     prompt = build_context_files_prompt(cwd=workspace, skip_soul=True)
-    if "Hermes-Orchestrator" not in prompt:
-        _fail("AGENTS.md was not loaded into project context", 1)
+    agents_loaded = "Hermes-Orchestrator" in prompt
+    claude_loaded = "Hermes CLAUDE.md Context" in prompt
+    if agents_loaded != policy.load_orchestrator:
+        _fail("AGENTS.md context selection mismatch", 1)
+    if claude_loaded != policy.load_claude_context:
+        _fail("CLAUDE.md context selection mismatch", 1)
     print(
         json.dumps(
             {
                 "ok": True,
                 "workspace": workspace,
-                "agents_md_loaded": True,
+                "agents_md_loaded": agents_loaded,
+                "claude_md_loaded": claude_loaded,
             },
             indent=2,
         )
@@ -466,9 +544,8 @@ def main() -> None:
         _fail(str(exc))
 
     os.environ["HERMES_SAFE_MODE"] = "0" if policy.enable_mcp else "1"
-    os.environ["HERMES_IGNORE_RULES"] = (
-        "0" if policy.load_orchestrator else "1"
-    )
+    os.environ["HERMES_IGNORE_RULES"] = "0" if policy.load_context_files else "1"
+    _install_context_policy(policy)
     _install_extension_policy(policy)
     _install_remote_mount_policy(policy)
     _apply_terminal_policy_env(policy)
@@ -482,8 +559,16 @@ def main() -> None:
                     "capabilities": policy.capabilities,
                     "toolsets": policy.toolsets,
                     "allowed_tools": allowed_tools,
-                    "context_files": policy.load_orchestrator,
+                    "context_files": tuple(
+                        name
+                        for name, enabled in (
+                            ("AGENTS.md", policy.load_orchestrator),
+                            ("CLAUDE.md", policy.load_claude_context),
+                        )
+                        if enabled
+                    ),
                     "orchestrator": policy.load_orchestrator,
+                    "claude_context": policy.load_claude_context,
                     "persistent_memory": False,
                     "plugins": False,
                     "mcp": policy.enable_mcp,
@@ -510,8 +595,8 @@ def main() -> None:
     if args == ["--mcp-probe"]:
         _probe_mcp(policy)
         return
-    if args == ["--orchestrator-probe"]:
-        _probe_orchestrator(policy)
+    if args in (["--context-probe"], ["--orchestrator-probe"]):
+        _probe_context(policy)
         return
 
     _reject_policy_bypasses(args)

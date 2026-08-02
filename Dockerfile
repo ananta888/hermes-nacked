@@ -3,6 +3,7 @@ FROM ${HERMES_IMAGE}
 
 COPY --chmod=0444 container/policy.py /usr/local/lib/hermes_naked_policy.py
 COPY --chmod=0444 container/policy.py /usr/local/lib/hermesctl_policy.py
+COPY --chmod=0444 container/worker_policy.py /usr/local/lib/hermes_worker_policy.py
 COPY --chmod=0555 container/hermes-naked.py /usr/local/bin/hermes-naked
 COPY --chmod=0555 container/hermesctl-mcp.py /usr/local/bin/hermesctl-mcp
 COPY --chmod=0444 container/worker_rpc.py /usr/local/lib/worker_rpc.py

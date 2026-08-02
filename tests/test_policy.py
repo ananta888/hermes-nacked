@@ -20,6 +20,8 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(policy.direct_control)
         self.assertFalse(policy.enable_mcp)
         self.assertFalse(policy.load_orchestrator)
+        self.assertFalse(policy.load_claude_context)
+        self.assertFalse(policy.load_context_files)
         self.assertEqual(policy.direct_workers, ())
         self.assertEqual(policy.mcp_workers, ())
         self.assertEqual(policy.workers, ())
@@ -33,8 +35,11 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(policy.sandbox_network)
 
     def test_aliases_are_normalized(self):
-        policy = parse_capabilities("tools shell")
-        self.assertEqual(policy.capabilities, ("commandline", "files"))
+        policy = parse_capabilities("tools shell AGENTS.md")
+        self.assertEqual(
+            policy.capabilities,
+            ("commandline", "files", "orchestrator"),
+        )
 
     def test_unknown_capability_fails_closed(self):
         with self.assertRaises(PolicyError):
@@ -72,7 +77,22 @@ class PolicyTests(unittest.TestCase):
         policy = parse_capabilities("orchestrator")
         self.assertEqual(policy.toolsets, ())
         self.assertTrue(policy.load_orchestrator)
+        self.assertFalse(policy.load_claude_context)
+        self.assertTrue(policy.load_context_files)
         self.assertFalse(policy.needs_sandbox)
+
+    def test_claude_context_is_independent_and_context_only(self):
+        policy = parse_capabilities("claude-md")
+        self.assertEqual(policy.capabilities, ("claude-md",))
+        self.assertEqual(policy.toolsets, ())
+        self.assertFalse(policy.load_orchestrator)
+        self.assertTrue(policy.load_claude_context)
+        self.assertTrue(policy.load_context_files)
+        self.assertFalse(policy.needs_sandbox)
+
+        combined = parse_capabilities("agents-md claude-md")
+        self.assertTrue(combined.load_orchestrator)
+        self.assertTrue(combined.load_claude_context)
 
     def test_worker_direct_requires_shell_and_skills(self):
         for capability in ("codex-direct", "claude-direct", "opencode-direct"):

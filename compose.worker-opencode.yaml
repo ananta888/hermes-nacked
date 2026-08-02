@@ -31,10 +31,18 @@ services:
       XDG_DATA_HOME: /home/worker/.local/share
       XDG_CONFIG_HOME: /home/worker/.config
       XDG_CACHE_HOME: /home/worker/.cache
-      OPENCODE_CONFIG_CONTENT: '{"autoupdate":false,"share":"disabled","subagent_depth":0,"permission":{"external_directory":"deny","doom_loop":"deny"}}'
+      OPENCODE_DISABLE_AUTOUPDATE: "1"
+      OPENCODE_DISABLE_SHARE: "1"
+      OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1"
+      OPENCODE_DISABLE_CLAUDE_CODE: "1"
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"
+      OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
       WORKER_KIND: opencode
       WORKER_HOME: /home/worker
       WORKER_WORKSPACE: /workspace
+      WORKER_CONTROL_FILE: /worker-control/capabilities
+      WORKER_CONTEXT: /worker-context
       WORKER_SOCKET: /worker-socket/worker.sock
       WORKER_TIMEOUT_MAX: "1800"
       NO_COLOR: "1"
@@ -50,6 +58,14 @@ services:
       - type: bind
         source: ${HERMES_HOST_ROOT}/runtime/workers/opencode/socket
         target: /worker-socket
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/control/workers/opencode
+        target: /worker-control
+        read_only: true
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/worker-context/opencode
+        target: /worker-context
+        read_only: true
     healthcheck:
       test: [CMD-SHELL, "test -S /worker-socket/worker.sock"]
       interval: 2s

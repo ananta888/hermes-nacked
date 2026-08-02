@@ -32,6 +32,8 @@ services:
       WORKER_KIND: codex
       WORKER_HOME: /home/worker
       WORKER_WORKSPACE: /workspace
+      WORKER_CONTROL_FILE: /worker-control/capabilities
+      WORKER_CONTEXT: /worker-context
       WORKER_SOCKET: /worker-socket/worker.sock
       WORKER_TIMEOUT_MAX: "1800"
       NO_COLOR: "1"
@@ -47,6 +49,14 @@ services:
       - type: bind
         source: ${HERMES_HOST_ROOT}/runtime/workers/codex/socket
         target: /worker-socket
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/control/workers/codex
+        target: /worker-control
+        read_only: true
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/worker-context/codex
+        target: /worker-context
+        read_only: true
     healthcheck:
       test: [CMD-SHELL, "test -S /worker-socket/worker.sock"]
       interval: 2s

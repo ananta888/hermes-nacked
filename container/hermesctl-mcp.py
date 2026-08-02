@@ -15,14 +15,16 @@ CONTROL_ENV = {
     "HERMESCTL_ROOT": "/control",
     "HERMESCTL_CAPABILITIES_FILE": "/control/.hermes-capabilities",
     "HERMESCTL_POLICY_DIR": "/usr/local/lib",
+    "HERMESCTL_WORKER_CONTROL_DIR": "/control/workers",
     "HERMESCTL_CONTROL_ONLY": "1",
 }
 
 mcp = FastMCP(
     "hermesctl",
     instructions=(
-        "Manage only the capability policy of this Hermes Naked instance. "
-        "Policy changes affect newly started sessions, never the current tool snapshot."
+        "Manage only the Hermes capability policy and the separate feature "
+        "policies of its three isolated coding workers. Hermes policy changes "
+        "affect new sessions; worker policy changes affect the next worker task."
     ),
 )
 
@@ -77,6 +79,26 @@ def _normalize_capabilities(capabilities: list[str]) -> list[str]:
     return result
 
 
+def _normalize_worker(worker: str) -> str:
+    if not isinstance(worker, str):
+        raise ValueError("worker must be a string")
+    normalized = worker.strip().lower()
+    if normalized not in {"codex", "claude", "opencode"}:
+        raise ValueError("worker must be codex, claude, or opencode")
+    return normalized
+
+
+def _normalize_worker_features(features: list[str]) -> list[str]:
+    if not isinstance(features, list) or not features:
+        raise ValueError("features must be a non-empty list")
+    result: list[str] = []
+    for feature in features:
+        if not isinstance(feature, str) or not feature.strip():
+            raise ValueError("each worker feature must be a non-empty string")
+        result.append(feature.strip())
+    return result
+
+
 @mcp.tool()
 def status() -> dict[str, Any]:
     """Show this installation's effective capabilities and isolation state."""
@@ -105,6 +127,40 @@ def disable(capabilities: list[str]) -> dict[str, Any]:
 def reset() -> dict[str, Any]:
     """Remove every model-facing capability for newly started sessions."""
     return _run("reset")
+
+
+@mcp.tool()
+def worker_rights(worker: str) -> dict[str, Any]:
+    """Show one worker's separately enforced feature policy."""
+    return _run("worker", _normalize_worker(worker), "rights")
+
+
+@mcp.tool()
+def worker_enable(worker: str, features: list[str]) -> dict[str, Any]:
+    """Enable explicitly requested features for one worker's next task."""
+    return _run(
+        "worker",
+        _normalize_worker(worker),
+        "enable",
+        *_normalize_worker_features(features),
+    )
+
+
+@mcp.tool()
+def worker_disable(worker: str, features: list[str]) -> dict[str, Any]:
+    """Disable explicitly requested features for one worker's next task."""
+    return _run(
+        "worker",
+        _normalize_worker(worker),
+        "disable",
+        *_normalize_worker_features(features),
+    )
+
+
+@mcp.tool()
+def worker_reset(worker: str) -> dict[str, Any]:
+    """Return exactly one coding worker to model-only operation."""
+    return _run("worker", _normalize_worker(worker), "reset")
 
 
 if __name__ == "__main__":

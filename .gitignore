@@ -3,7 +3,9 @@
 runtime/state/**
 runtime/workspace/**
 runtime/workers/**
+runtime/control/**
 !runtime/state/.gitkeep
 !runtime/workspace/.gitkeep
+!runtime/control/.gitkeep
 __pycache__/
 *.pyc
