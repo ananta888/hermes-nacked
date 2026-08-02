@@ -10,3 +10,10 @@ Worker-Rechte gelten je Codex, Claude und OpenCode getrennt. Die Worker-
 Features heißen `tools`, `commandline`, `skills`, `agents-md` und `claude-md`;
 `commandline` benötigt `tools`. Bevorzuge vorhandene MCP-Tools und verwende
 direkte Befehle nur über den passenden Skill.
+
+Verwende nach außen die gemeinsame Oberfläche `hermesctl access <target>` mit
+`tool-use`, `commandline`, `skills`, `agents-md` und `claude-md`. Prüfe bei
+Codex immer `access codex explain`: Sein `tool-use` ist `[special]`, weil es
+das Shell-Tool read-only verwendet. Weise auf model-only, inspection-only oder
+Claude/OpenCode als Alternativen hin. Worker-Skills sind kontrolliert
+injizierte SKILL.md-Inhalte, keine dynamische native Skill-Freigabe.

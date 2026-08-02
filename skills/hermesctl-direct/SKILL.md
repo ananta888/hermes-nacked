@@ -1,6 +1,6 @@
 ---
 name: hermesctl-direct
-description: Inspect and change the Hermes capability policy or one isolated coding worker's separate feature policy through the restricted hermesctl CLI. Use when the user explicitly asks Hermes to explain, enable, disable, or reset Hermes or worker permissions and the skills, commandline, and hermesctl-direct capabilities are active.
+description: Inspect, explain, and change access for Hermes, Codex CLI, Claude Code, or OpenCode through the restricted hermesctl CLI and its common access vocabulary. Use when the user explicitly asks Hermes to explain, enable, disable, or reset a target's tool-use, commandline, skills, AGENTS.md, or CLAUDE.md rights and the skills, commandline, and hermesctl-direct capabilities are active.
 ---
 
 # Hermesctl Direct
@@ -12,9 +12,9 @@ sandbox.
 
 ## Workflow
 
-1. Run `hermesctl status` before a Hermes policy change, or
-   `hermesctl worker <worker> rights` before a worker policy change.
-2. Explain the least set of rights needed and its risk.
+1. Run `hermesctl access <target> status` before a policy change.
+2. Run `hermesctl access <target> explain` when a mapping is marked special,
+   controlled, or unclear. Explain the least set of rights and its risk.
 3. Obtain an explicit user request before `enable`, `disable`, or `reset`.
 4. Run exactly one of the allowed commands.
 5. Verify with the matching status command. Hermes policy applies to the next
@@ -23,17 +23,20 @@ sandbox.
 ## Commands
 
 ```bash
-hermesctl status
-hermesctl capabilities
-hermesctl enable files
-hermesctl disable web
-hermesctl reset
-hermesctl worker codex rights
-hermesctl worker codex capabilities
-hermesctl worker codex enable tools agents-md
-hermesctl worker codex disable agents-md
-hermesctl worker codex reset
+hermesctl access hermes status
+hermesctl access codex explain
+hermesctl access claude capabilities
+hermesctl access codex enable tool-use agents-md
+hermesctl access codex enable commandline
+hermesctl access codex disable claude-md
+hermesctl access codex reset
 ```
+
+Targets are `hermes`, `codex`, `claude`, and `opencode`. Their shared feature
+names are `tool-use`, `commandline`, `skills`, `agents-md`, and `claude-md`.
+Use this interface by default. The older `hermesctl enable ...` and
+`hermesctl worker ...` forms remain available for compatibility and for the
+Hermes-only advanced capabilities listed below.
 
 Valid capabilities are `files`, `commandline`, `skills`, `web`, `code`,
 `planning`, `shell-network`, `orchestrator`, `claude-md`, `hermesctl-direct`, and
@@ -52,6 +55,13 @@ Worker features are `tools`, `commandline`, `skills`, `agents-md`, and
 `claude-md`. They are independent for Codex, Claude, and OpenCode;
 `commandline` requires `tools`. Never enable a feature for a different worker
 as a convenience. The feature files are not Hermes session capabilities.
+
+Treat `[special]` and `[controlled]` from `access ... explain` as actionable
+warnings. Codex `tool-use` is its shell tool inside a read-only sandbox, not a
+native file-only tool. Offer model-only, inspection-only, or Claude/OpenCode
+as the listed alternatives instead of hiding this difference. Worker `skills`
+means reviewed SKILL.md bodies injected by the broker; it does not enable a
+dynamic native skill surface.
 
 Never edit the capability file directly, invoke Docker, use host paths, or
 claim that the running session gained tools. If `hermesctl` is unavailable,

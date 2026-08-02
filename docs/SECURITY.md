@@ -30,6 +30,11 @@ den zweiten Sandbox-Container zu verwalten.
 ## Garantien dieses Projekts
 
 - Unbekannte Capability-Namen brechen den Start ab (fail closed).
+- Die gemeinsame `access`-Oberfläche akzeptiert nur die vier Ziele `hermes`,
+  `codex`, `claude`, `opencode` und die fünf Features `tool-use`,
+  `commandline`, `skills`, `agents-md`, `claude-md`. Sie schreibt weiterhin
+  nur das exakte Hermes- oder Einzel-Worker-Profil; ein Target-Reset berührt
+  kein anderes Ziel.
 - Ohne Capability ist die effektive Toolliste leer.
 - Provider-Credentials werden nicht an die Command-Sandbox weitergereicht.
 - Nur `runtime/workspace` wird schreibbar in die Command-Sandbox gemountet.
@@ -145,6 +150,11 @@ Agent-Kern selbst.
     seine Permissions, aber Bash läuft im Worker mit dessen Egress. Die
     Statusausgabe benennt diese Abbildung ausdrücklich.
 
+    `hermesctl access <target> explain` und das gleichnamige MCP-Werkzeug
+    kennzeichnen deshalb native Abbildungen mit `[native]`, kontrollierte
+    Kontextinjektion mit `[controlled]` und Codex-Abweichungen mit `[special]`.
+    Die gemeinsame Benennung ist kein Versprechen identischer Technik.
+
 13. **Kontextdateien und Skills sind Anweisungen, keine Sandbox.** Ihre
     read-only Herkunft verhindert Selbständerung, nicht Prompt Injection im
     Inhalt. Vor Aktivierung `worker-context/<worker>` prüfen. Der Broker lädt
@@ -166,8 +176,9 @@ Agent-Kern selbst.
 9. Einen Worker zuerst als Operator anmelden und mit `worker ... status`
    sowie `worker ... rights` prüfen; anschließend genau einen `*-mcp`-Schalter
    testen. Der Worker bleibt dabei model-only.
-10. Für genau diesen Worker zuerst `agents-md` oder `skills`, dann `tools` und
-    zuletzt bei Bedarf `commandline` einzeln freigeben.
+10. Für genau diesen Worker über `access <worker>` zuerst `agents-md` oder
+    `skills`, dann `tool-use` und zuletzt bei Bedarf `commandline` einzeln
+    freigeben.
 11. `*-direct` nur ergänzen, wenn der direkte Commandline-Weg wirklich nötig
     ist. Weitere Worker einzeln und erst nach Prüfung ihres privaten Workspaces
     freigeben.

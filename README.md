@@ -104,6 +104,57 @@ Referenzen:
 - [Ollama: `OLLAMA_HOST` und Netzwerkfreigabe](https://docs.ollama.com/faq)
 - [LM Studio: lokalen Server starten](https://lmstudio.ai/docs/developer/core/server)
 
+## Eine gemeinsame Rechte-Oberfläche
+
+Hermes, Codex CLI, Claude Code und OpenCode lassen sich mit denselben fünf
+Benutzerbegriffen steuern:
+
+```bash
+# Aktuellen Null-/Rechtestand eines Ziels prüfen
+./hermesctl access hermes status
+./hermesctl access codex status
+
+# Die tatsächliche technische Abbildung und Alternativen ansehen
+./hermesctl access codex explain
+
+# Genau einem Ziel einzelne Rechte geben
+./hermesctl access claude enable tool-use
+./hermesctl access claude enable commandline
+./hermesctl access claude enable skills agents-md
+
+# Nur dieses Ziel zurücksetzen
+./hermesctl access claude reset
+```
+
+Gültige Ziele sind `hermes`, `codex`, `claude` und `opencode`. Die gemeinsamen
+Schalter sind `tool-use`, `commandline`, `skills`, `agents-md` und
+`claude-md`. Intern bildet der Adapter sie auf die tatsächlich vorhandenen
+Sicherheitsmechanismen ab. Er markiert jede Zeile:
+
+- `[native]`: Die Ziel-CLI besitzt eine passende getrennte Oberfläche.
+- `[controlled]`: Hermes Naked injiziert ausschließlich eine geprüfte,
+  read-only Quelle; die dynamische native Discovery bleibt aus.
+- `[special]`: Die Ziel-CLI kann das gemeinsame Konzept technisch nicht exakt
+  abbilden. Direkt darunter steht ein `[alternative]`-Pfad.
+
+Besonders wichtig ist Codex: Es hat kein getrenntes natives File-Tool.
+`tool-use` aktiviert dort das Shell-Tool in einer `read-only`-Sandbox;
+`commandline` schaltet denselben Weg auf `workspace-write`. Wer überhaupt
+keine Kommandos erlauben will, lässt Codex model-only. Für reine Inspektion
+genügt `tool-use`; für eine echte native Trennung von Dateiwerkzeugen und Bash
+sind Claude oder OpenCode die Alternative.
+
+Bei allen Workern benötigt `commandline` ein bereits aktives `tool-use`; beide
+müssen ausdrücklich genannt werden, wenn sie in einem Schritt freigegeben
+werden. Bei Hermes sind Datei-Tools und Commandline dagegen wirklich
+unabhängig. `skills` bedeutet bei Workern kontrolliert injizierte, zuvor vom
+Operator geprüfte `SKILL.md`-Inhalte – keine dynamische Plugin-/Skill-Suche.
+
+Die bisherigen Befehle `./hermesctl enable ...` und
+`./hermesctl worker ...` bleiben als Experten- und Kompatibilitätsoberfläche
+erhalten. Sie werden außerdem für Hermes-spezifische Rechte wie `web`,
+`planning`, `shell-network` oder einzelne Worker-Zugriffswege benötigt.
+
 ## Rechte einzeln schalten
 
 ```bash
@@ -192,6 +243,11 @@ gewinnt“ injiziert die Hülle dann beide explizit. `hermesctl-direct` benötig
 `skills` und `commandline`.
 `hermesctl-mcp` benötigt `skills` und registriert ausschließlich:
 
+- `mcp__hermesctl__access_status`
+- `mcp__hermesctl__access_explain`
+- `mcp__hermesctl__access_enable`
+- `mcp__hermesctl__access_disable`
+- `mcp__hermesctl__access_reset`
 - `mcp__hermesctl__status`
 - `mcp__hermesctl__list_capabilities`
 - `mcp__hermesctl__enable`
@@ -284,22 +340,23 @@ gilt nur für genau einen Worker:
 
 ```bash
 # Erst ansehen
-./hermesctl worker codex rights
+./hermesctl access codex status
+./hermesctl access codex explain
 
 # Datei-/Suchwerkzeuge ohne allgemeine Commandline
-./hermesctl worker codex enable tools
+./hermesctl access codex enable tool-use
 
-# Commandline separat; sie benötigt tools
-./hermesctl worker codex enable commandline
+# Commandline separat; sie benötigt tool-use
+./hermesctl access codex enable commandline
 
 # Drei voneinander unabhängige Kontextquellen
-./hermesctl worker codex enable skills
-./hermesctl worker codex enable agents-md
-./hermesctl worker codex enable claude-md
+./hermesctl access codex enable skills
+./hermesctl access codex enable agents-md
+./hermesctl access codex enable claude-md
 
 # Einzeln entziehen oder nur diesen Worker vollständig zurücksetzen
-./hermesctl worker codex disable claude-md
-./hermesctl worker codex reset
+./hermesctl access codex disable claude-md
+./hermesctl access codex reset
 ```
 
 Die gleichen Befehle gelten für `claude` und `opencode`. Änderungen greifen
@@ -395,10 +452,11 @@ Soll Hermes die Worker-Profile selbst orchestrieren, braucht es zusätzlich
 ./hermesctl chat
 ```
 
-Hermes prüft dann zunächst `mcp__hermesctl__worker_rights`, erklärt Wirkung
+Hermes prüft dann zunächst `mcp__hermesctl__access_status` mit `target="codex"`
+und bei Bedarf `mcp__hermesctl__access_explain`, erklärt Wirkung
 und Risiko und darf erst nach ausdrücklicher Benutzerfreigabe beispielsweise
-`mcp__hermesctl__worker_enable` mit `worker="codex"` und
-`features=["tools"]` ausführen. Login, Modellwahl und Containerverwaltung
+`mcp__hermesctl__access_enable` mit `target="codex"` und
+`features=["tool-use"]` ausführen. Login, Modellwahl und Containerverwaltung
 bleiben auch dabei reine Operator-Aktionen.
 
 ## Was technisch erzwungen wird
@@ -452,7 +510,7 @@ Die effektive Policy lässt sich ohne Modell/API-Aufruf prüfen:
 | Shell | Standardmäßig lokales Backend möglich | Zweiter Container, kein Host-Mount außer Workspace, zunächst air-gapped |
 | Erweiterungen | Plugins, MCP und Hooks erweitern den Agenten dynamisch | Standardmäßig blockiert; optional nur lokal fest verdrahtete Hermesctl-/Worker-MCPs |
 | Coding-Agenten | Delegation kann Teil des allgemeinen Agenten-Ökosystems sein | Drei separat gepinnte Container, States, Workspaces, Sockets sowie je fünf separat schaltbare Worker-Rechte |
-| Bedienung | Maximale Autonomie und Komfort | Explizite, auditierbare Schalter mit mehr Bedienaufwand |
+| Bedienung | Maximale Autonomie und Komfort | Gemeinsame `access`-Schalter, aber weiterhin explizite und auditierbare Freigaben |
 
 Der Vorteil von Hermes Naked ist die kleine und nachvollziehbare Angriffsfläche:
 unbekannte Projekte, Inhalte oder Modelle bekommen zunächst keinerlei

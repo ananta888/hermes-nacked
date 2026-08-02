@@ -67,7 +67,8 @@ def parse_worker_features(raw: str | None) -> WorkerPolicy:
         )
     if "commandline" in values and "tools" not in values:
         raise WorkerPolicyError(
-            "worker commandline requires tools; enable both explicitly"
+            "worker commandline requires tools (generic: tool-use); "
+            "enable both explicitly"
         )
 
     features = tuple(sorted(values))

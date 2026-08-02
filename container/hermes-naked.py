@@ -29,6 +29,11 @@ HERMESCTL_MCP_TOOLS = {
     "mcp__hermesctl__enable",
     "mcp__hermesctl__disable",
     "mcp__hermesctl__reset",
+    "mcp__hermesctl__access_status",
+    "mcp__hermesctl__access_explain",
+    "mcp__hermesctl__access_enable",
+    "mcp__hermesctl__access_disable",
+    "mcp__hermesctl__access_reset",
     "mcp__hermesctl__worker_rights",
     "mcp__hermesctl__worker_enable",
     "mcp__hermesctl__worker_disable",
@@ -223,6 +228,11 @@ def _install_extension_policy(policy) -> None:
                     "enable",
                     "disable",
                     "reset",
+                    "access_status",
+                    "access_explain",
+                    "access_enable",
+                    "access_disable",
+                    "access_reset",
                     "worker_rights",
                     "worker_enable",
                     "worker_disable",
@@ -358,6 +368,10 @@ def _probe_sandbox(policy) -> None:
             "grep -q '^Capabilities:' /tmp/hermesctl-status; "
             "hermesctl worker codex rights >/tmp/codex-rights; "
             "grep -q '^Worker rights:' /tmp/codex-rights; "
+            "hermesctl access hermes status >/tmp/access-hermes; "
+            "grep -q '^Access target:     hermes' /tmp/access-hermes; "
+            "hermesctl access codex explain >/tmp/access-codex; "
+            "grep -q '^\\[special\\].*tool-use' /tmp/access-codex; "
             "printf 'hermesctl=mounted\\n'; "
             if policy.direct_control
             else "test ! -e /control/.hermes-capabilities; printf 'hermesctl=absent\\n'; "
@@ -473,6 +487,13 @@ def _probe_mcp(policy) -> None:
         status_tools: list[tuple[str, dict[str, str]]] = []
         if "hermesctl-mcp" in policy.capabilities:
             status_tools.append(("mcp__hermesctl__status", {}))
+            status_tools.extend(
+                ("mcp__hermesctl__access_status", {"target": target})
+                for target in ("hermes", "codex", "claude", "opencode")
+            )
+            status_tools.append(
+                ("mcp__hermesctl__access_explain", {"target": "codex"})
+            )
             status_tools.extend(
                 ("mcp__hermesctl__worker_rights", {"worker": worker})
                 for worker in ("codex", "claude", "opencode")

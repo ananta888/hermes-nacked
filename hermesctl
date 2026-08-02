@@ -57,6 +57,17 @@ Rights (independent switches):
   status                       Show the effective policy
   capabilities                 List available switches
 
+Generic access (same user-facing switches for every target):
+  access TARGET status         Show the target's effective access policy
+  access TARGET explain        Show native/special mappings and alternatives
+  access TARGET capabilities   List the five common access switches
+  access TARGET enable FEATURE [...]
+  access TARGET disable FEATURE [...]
+  access TARGET reset          Reset only this target to its zero-right state
+
+Access targets: hermes, codex, claude, opencode
+Common features: tool-use, commandline, skills, agents-md, claude-md
+
 Administration (operator actions, never agent tools):
   model [Hermes model args]    Choose provider/model with the official wizard
   anthropic-login [auth args]  Add an Anthropic OAuth account interactively
@@ -517,6 +528,210 @@ normalize_worker() {
   esac
 }
 
+normalize_access_target() {
+  local target=${1:-}
+  target=${target,,}
+  target=${target//_/-}
+  case "$target" in
+    hermes) printf 'hermes\n' ;;
+    codex|codex-cli) printf 'codex\n' ;;
+    claude|claude-cli|claude-code) printf 'claude\n' ;;
+    opencode|opencode-cli|open-code) printf 'opencode\n' ;;
+    *)
+      die "unknown access target: ${target:-missing} "\
+        '(expected hermes, codex, claude, or opencode)'
+      ;;
+  esac
+}
+
+map_access_features() {
+  local target=$1
+  shift
+  (($# > 0)) || die 'access enable/disable needs at least one feature'
+  ACCESS_MAPPED_FEATURES=()
+  local requested generic mapped
+  for requested in "$@"; do
+    generic=${requested,,}
+    generic=${generic//_/-}
+    case "$generic" in
+      tool|tools|tool-use|tooluse) generic=tool-use ;;
+      commandline|shell|terminal) generic=commandline ;;
+      skill|skills) generic=skills ;;
+      agents|agents-md|agents.md|agentsmd) generic=agents-md ;;
+      claude-md|claude.md|claudemd) generic=claude-md ;;
+      *) die "unknown generic access feature: $requested" ;;
+    esac
+    if [[ "$target" == hermes ]]; then
+      case "$generic" in
+        tool-use) mapped=files ;;
+        agents-md) mapped=orchestrator ;;
+        *) mapped=$generic ;;
+      esac
+    else
+      case "$generic" in
+        tool-use) mapped=tools ;;
+        *) mapped=$generic ;;
+      esac
+    fi
+    ACCESS_MAPPED_FEATURES+=("$mapped")
+  done
+}
+
+show_access_capabilities() {
+  cat <<'EOF'
+Common access features:
+  tool-use      target's narrow file/read/search/edit tool level
+  commandline   target's command execution/write level
+  skills        reviewed skill instructions or policy-gated skill tools
+  agents-md     protected AGENTS.md orchestration context
+  claude-md     protected CLAUDE.md compatibility context
+
+Aliases: tools=tool-use, shell/terminal=commandline,
+         AGENTS.md=agents-md, CLAUDE.md=claude-md
+EOF
+}
+
+show_access_explanation() {
+  local target=$1
+  printf 'Access target: %s\n' "$target"
+  case "$target" in
+    hermes)
+      cat <<'EOF'
+[native]     tool-use    -> Hermes files (isolated Hermes workspace only)
+[native]     commandline -> netless nested command sandbox
+[native]     skills      -> policy-gated Hermes skill tools
+[controlled] agents-md   -> protected root AGENTS.md (underlying: orchestrator)
+[controlled] claude-md   -> protected root CLAUDE.md
+[alternative] Advanced Hermes-only switches remain available through
+              `hermesctl capabilities` and `hermesctl enable|disable`.
+EOF
+      ;;
+    codex)
+      cat <<'EOF'
+[special]    tool-use    -> Codex shell tool in a read-only sandbox
+[special]    commandline -> the same shell path with workspace-write;
+                            requires tool-use in this policy
+[controlled] skills      -> reviewed SKILL.md bodies are injected; native
+                            dynamic skill discovery stays disabled
+[controlled] agents-md   -> protected worker AGENTS.md
+[controlled] claude-md   -> protected worker CLAUDE.md
+[alternative] For no command execution, leave tool-use off (model-only).
+              For inspection, enable tool-use alone. For a true native split
+              between file tools and Bash, use the Claude or OpenCode worker.
+EOF
+      ;;
+    claude)
+      cat <<'EOF'
+[native]     tool-use    -> Read, Glob, Grep, Edit, Write; Bash stays disabled
+[native]     commandline -> adds Bash and requires tool-use in this policy
+[controlled] skills      -> reviewed SKILL.md bodies are injected; native
+                            dynamic skill discovery stays disabled
+[controlled] agents-md   -> protected worker AGENTS.md
+[controlled] claude-md   -> protected worker CLAUDE.md
+[alternative] Use tool-use without commandline for native file tools only.
+              Add reviewed skills under worker-context/claude/skills.
+EOF
+      ;;
+    opencode)
+      cat <<'EOF'
+[native]     tool-use    -> read, glob, grep, edit; Bash stays denied
+[native]     commandline -> additionally allows Bash and requires tool-use
+[controlled] skills      -> reviewed SKILL.md bodies are injected; native
+                            dynamic skill discovery stays denied
+[controlled] agents-md   -> protected worker AGENTS.md
+[controlled] claude-md   -> protected worker CLAUDE.md
+[alternative] Use tool-use without commandline for native file permissions.
+              Add reviewed skills under worker-context/opencode/skills.
+EOF
+      ;;
+  esac
+}
+
+show_access_status() {
+  local target=$1
+  local json enabled_text
+  local -a enabled=()
+  printf 'Access target:     %s\n' "$target"
+  if [[ "$target" == hermes ]]; then
+    json=$(policy_json)
+    enabled_text=",$(policy_field capabilities "$json"),"
+    [[ "$enabled_text" == *,files,* ]] && enabled+=(tool-use)
+    [[ "$enabled_text" == *,commandline,* ]] && enabled+=(commandline)
+    [[ "$enabled_text" == *,skills,* ]] && enabled+=(skills)
+    [[ "$enabled_text" == *,orchestrator,* ]] && enabled+=(agents-md)
+    [[ "$enabled_text" == *,claude-md,* ]] && enabled+=(claude-md)
+    printf 'Common access:     %s\n' "${enabled[*]:-none (pure chat)}"
+    show_status
+  else
+    json=$(worker_policy_json "$target")
+    [[ $(policy_field tools "$json") == true ]] && enabled+=(tool-use)
+    [[ $(policy_field commandline "$json") == true ]] && enabled+=(commandline)
+    [[ $(policy_field skills "$json") == true ]] && enabled+=(skills)
+    [[ $(policy_field agents_md "$json") == true ]] && enabled+=(agents-md)
+    [[ $(policy_field claude_md "$json") == true ]] && enabled+=(claude-md)
+    printf 'Common access:     %s\n' "${enabled[*]:-none (model-only)}"
+    show_worker_rights "$target"
+  fi
+  case "$target" in
+    codex)
+      printf 'Adapter:           [special] Codex has no native file/shell split\n'
+      ;;
+    hermes)
+      printf 'Adapter:           [native] Hermes capability policy\n'
+      ;;
+    *)
+      printf 'Adapter:           [native] separate file and command surfaces\n'
+      ;;
+  esac
+  printf 'Mapping details:   hermesctl access %s explain\n' "$target"
+}
+
+access_command() {
+  local target
+  target=$(normalize_access_target "${1:-}")
+  shift || true
+  local action=${1:-status}
+  if (($# > 0)); then
+    shift
+  fi
+
+  case "$action" in
+    status|rights)
+      (($# == 0)) || die 'access status accepts no additional arguments'
+      show_access_status "$target"
+      ;;
+    explain)
+      (($# == 0)) || die 'access explain accepts no additional arguments'
+      show_access_explanation "$target"
+      ;;
+    capabilities)
+      (($# == 0)) || die 'access capabilities accepts no additional arguments'
+      show_access_capabilities
+      printf '\n'
+      show_access_explanation "$target"
+      ;;
+    enable|disable)
+      map_access_features "$target" "$@"
+      if [[ "$target" == hermes ]]; then
+        write_capabilities "$action" "${ACCESS_MAPPED_FEATURES[@]}"
+      else
+        write_worker_features "$target" "$action" "${ACCESS_MAPPED_FEATURES[@]}"
+      fi
+      show_access_status "$target"
+      ;;
+    reset)
+      (($# == 0)) || die 'access reset accepts no additional arguments'
+      if [[ "$target" == hermes ]]; then
+        commit_capabilities ''
+      else
+        commit_worker_features "$target" ''
+      fi
+      show_access_status "$target"
+      ;;
+    *) die "unknown access action: $action" ;;
+  esac
+}
+
 worker_compose() {
   local worker=$1
   printf '%s\0' "${BASE_COMPOSE[@]}" -f "$ROOT_DIR/compose.worker-$worker.yaml"
@@ -719,7 +934,7 @@ fi
 
 if [[ "$CONTROL_ONLY" == 1 ]]; then
   case "$command" in
-    enable|disable|reset|status|capabilities|worker|help|-h|--help) ;;
+    access|enable|disable|reset|status|capabilities|worker|help|-h|--help) ;;
     *) die "command is unavailable through model-facing hermesctl: $command" ;;
   esac
 fi
@@ -789,6 +1004,10 @@ EOF
   worker)
     ensure_layout
     worker_command "$@"
+    ;;
+  access)
+    ensure_layout
+    access_command "$@"
     ;;
   verify)
     ensure_layout

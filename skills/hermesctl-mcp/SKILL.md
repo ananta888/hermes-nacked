@@ -1,6 +1,6 @@
 ---
 name: hermesctl-mcp
-description: Inspect and change the Hermes capability policy or one isolated coding worker's separate feature policy through the scoped local MCP server. Use when the user explicitly asks Hermes to explain, enable, disable, or reset Hermes or worker permissions and the skills and hermesctl-mcp capabilities are active.
+description: Inspect, explain, and change access for Hermes, Codex CLI, Claude Code, or OpenCode through scoped local MCP tools and their common access vocabulary. Use when the user explicitly asks Hermes to explain, enable, disable, or reset a target's tool-use, commandline, skills, AGENTS.md, or CLAUDE.md rights and the skills and hermesctl-mcp capabilities are active.
 ---
 
 # Hermesctl MCP
@@ -11,10 +11,10 @@ executor.
 
 ## Workflow
 
-1. Call `mcp__hermesctl__status` before a Hermes policy change, or
-   `mcp__hermesctl__worker_rights` before a worker policy change.
-2. Use `mcp__hermesctl__list_capabilities` when capability names or
-   dependencies are unclear.
+1. Call `mcp__hermesctl__access_status` with exactly one target before a
+   policy change.
+2. Call `mcp__hermesctl__access_explain` when a mapping is marked special,
+   controlled, or unclear.
 3. Explain the least set of rights needed and its risk.
 4. Obtain an explicit user request before calling an enable, disable, or reset
    tool.
@@ -22,6 +22,17 @@ executor.
    started Hermes session; worker changes apply to that worker's next task.
 
 ## Tools
+
+- `mcp__hermesctl__access_status`: inspect one target using common terms.
+- `mcp__hermesctl__access_explain`: show mappings and safe alternatives.
+- `mcp__hermesctl__access_enable`: enable common features for one target.
+- `mcp__hermesctl__access_disable`: disable common features for one target.
+- `mcp__hermesctl__access_reset`: reset only that target.
+
+Targets are `hermes`, `codex`, `claude`, and `opencode`. Their shared feature
+names are `tool-use`, `commandline`, `skills`, `agents-md`, and `claude-md`.
+Use these five tools by default. The following nine tools are retained for
+compatibility and Hermes-only advanced capabilities:
 
 - `mcp__hermesctl__status`: inspect effective policy.
 - `mcp__hermesctl__list_capabilities`: list switches and dependencies.
@@ -44,6 +55,12 @@ independent `claude-md` capability loads the protected root CLAUDE.md.
 Worker features are `tools`, `commandline`, `skills`, `agents-md`, and
 `claude-md`; `commandline` requires `tools`. Always pass exactly one of
 `codex`, `claude`, or `opencode` and never broaden another worker's profile.
+
+Treat `[special]` and `[controlled]` from `access_explain` as actionable
+warnings. Codex `tool-use` is its shell tool inside a read-only sandbox; offer
+model-only, inspection-only, or Claude/OpenCode as the returned alternatives.
+Worker `skills` injects reviewed SKILL.md bodies and leaves native dynamic
+skill discovery disabled.
 
 Never use unrelated MCP servers, edit the capability file directly, or imply
 that the current session's tool list changed. If these MCP tools are absent,

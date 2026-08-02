@@ -99,6 +99,34 @@ def _normalize_worker_features(features: list[str]) -> list[str]:
     return result
 
 
+def _normalize_access_target(target: str) -> str:
+    if not isinstance(target, str):
+        raise ValueError("target must be a string")
+    normalized = target.strip().lower().replace("_", "-")
+    aliases = {
+        "codex-cli": "codex",
+        "claude-cli": "claude",
+        "claude-code": "claude",
+        "opencode-cli": "opencode",
+        "open-code": "opencode",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"hermes", "codex", "claude", "opencode"}:
+        raise ValueError("target must be hermes, codex, claude, or opencode")
+    return normalized
+
+
+def _normalize_access_features(features: list[str]) -> list[str]:
+    if not isinstance(features, list) or not features:
+        raise ValueError("features must be a non-empty list")
+    result: list[str] = []
+    for feature in features:
+        if not isinstance(feature, str) or not feature.strip():
+            raise ValueError("each access feature must be a non-empty string")
+        result.append(feature.strip())
+    return result
+
+
 @mcp.tool()
 def status() -> dict[str, Any]:
     """Show this installation's effective capabilities and isolation state."""
@@ -127,6 +155,46 @@ def disable(capabilities: list[str]) -> dict[str, Any]:
 def reset() -> dict[str, Any]:
     """Remove every model-facing capability for newly started sessions."""
     return _run("reset")
+
+
+@mcp.tool()
+def access_status(target: str) -> dict[str, Any]:
+    """Show one target's policy through the common access vocabulary."""
+    return _run("access", _normalize_access_target(target), "status")
+
+
+@mcp.tool()
+def access_explain(target: str) -> dict[str, Any]:
+    """Explain native, controlled, and special mappings plus alternatives."""
+    return _run("access", _normalize_access_target(target), "explain")
+
+
+@mcp.tool()
+def access_enable(target: str, features: list[str]) -> dict[str, Any]:
+    """Enable common features for exactly one target's next session or task."""
+    return _run(
+        "access",
+        _normalize_access_target(target),
+        "enable",
+        *_normalize_access_features(features),
+    )
+
+
+@mcp.tool()
+def access_disable(target: str, features: list[str]) -> dict[str, Any]:
+    """Disable common features for exactly one target's next session or task."""
+    return _run(
+        "access",
+        _normalize_access_target(target),
+        "disable",
+        *_normalize_access_features(features),
+    )
+
+
+@mcp.tool()
+def access_reset(target: str) -> dict[str, Any]:
+    """Return exactly one target to pure-chat or model-only operation."""
+    return _run("access", _normalize_access_target(target), "reset")
 
 
 @mcp.tool()

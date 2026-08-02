@@ -36,10 +36,12 @@ Do not invoke both paths for the same task.
 - If the task needs a disabled worker feature, explain the smallest required
   change and its risk. Change it only after an explicit user request through
   the hermesctl MCP/direct skill; otherwise give the operator command
-  `./hermesctl worker codex enable <feature>`.
+  `./hermesctl access codex enable <feature>`.
 - Codex has no separate native file-tool surface. Here `tools` enables its
   shell tool under a read-only sandbox; `commandline` additionally permits the
-  workspace-write sandbox and requires `tools`.
+  workspace-write sandbox and requires `tools`. In the generic access command,
+  this first level is named `tool-use` and is marked `[special]`; point out
+  `./hermesctl access codex explain` and its alternatives.
 - Tell the user that changes occur under
   `runtime/workers/codex/workspace`, not in the Hermes workspace.
 - Include the goal, relevant constraints, expected verification, and desired

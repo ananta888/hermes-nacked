@@ -37,10 +37,11 @@ Do not invoke both paths for the same task.
 - If the task needs a disabled worker feature, explain the smallest required
   change and its risk. Change it only after an explicit user request through
   the hermesctl MCP/direct skill; otherwise give the operator command
-  `./hermesctl worker opencode enable <feature>`.
+  `./hermesctl access opencode enable <feature>`.
 - `tools` allows only OpenCode's read/glob/grep/edit permissions;
-  `commandline` separately allows Bash and requires `tools`. Task, web, LSP,
-  question, external-directory, and native Skill tools stay denied.
+  `commandline` separately allows Bash and requires `tools`. The generic name
+  for `tools` is `tool-use`. Task, web, LSP, question, external-directory, and
+  native Skill tools stay denied.
 - Tell the user that changes occur under
   `runtime/workers/opencode/workspace`, not in the Hermes workspace.
 - Include the goal, relevant constraints, expected verification, and desired

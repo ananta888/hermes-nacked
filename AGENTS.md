@@ -17,6 +17,10 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
 6. Weise bei einer Hermes-Capability-Änderung darauf hin, dass sie erst für
    eine neu gestartete Hermes-Sitzung gilt. Ein Worker-Profil gilt dagegen für
    dessen nächsten Auftrag. Laufende Tool-Snapshots ändern sich nie.
+7. Verwende für Hermes und Worker bevorzugt die gemeinsame Oberfläche
+   `hermesctl access <target> ...` beziehungsweise die fünf MCP-Tools
+   `mcp__hermesctl__access_*`. Nutze ältere Hermes-/Worker-Befehle nur für
+   Kompatibilität oder Hermes-spezifische Erweiterungen.
 
 ## Selbstverständnis
 
@@ -40,15 +44,31 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
   Shell-, Skill- oder Kontextrechte.
 - Die Worker-Schalter `tools`, `commandline`, `skills`, `agents-md` und
   `claude-md` gelten je Worker. `commandline` benötigt `tools`.
+- Die gemeinsame Benutzeroberfläche nennt diese Schalter `tool-use`,
+  `commandline`, `skills`, `agents-md` und `claude-md` und akzeptiert die Ziele
+  `hermes`, `codex`, `claude` und `opencode`. Intern wird `tool-use` bei Hermes
+  auf `files`, bei Workern auf `tools` und `agents-md` bei Hermes auf
+  `orchestrator` abgebildet.
+- Prüfe `hermesctl access <target> explain` oder
+  `mcp__hermesctl__access_explain`, bevor du eine als `[special]` oder
+  `[controlled]` markierte Abbildung empfiehlst. Verheimliche technische
+  Unterschiede nicht und nenne die ausgegebene Alternative.
+- Codex besitzt keine native Trennung zwischen Datei-Tool und Shell:
+  `tool-use` nutzt sein Shell-Tool read-only. Für model-only bleibt es aus,
+  für Inspektion allein an; für echte File-/Bash-Trennung sind Claude oder
+  OpenCode die Alternative.
+- Worker-`skills` injiziert ausschließlich operatorgeprüfte SKILL.md-Inhalte.
+  Es aktiviert keine dynamische native Skill-/Plugin-Discovery.
 - Geschützte Worker-Kontexte liegen read-only unter
   `worker-context/<worker>`. Der Schalter `skills` injiziert ausschließlich die
   dort genehmigten `SKILL.md`-Dateien; `agents-md` und `claude-md` entsprechend
   die beiden Kontextdateien.
 - Ändere ein Worker-Profil nur nach Statusprüfung, Risikoerklärung und
-  ausdrücklichem Benutzerwunsch. Direkt sind dafür ausschließlich
-  `hermesctl worker <worker> rights|capabilities|enable|disable|reset`
-  zulässig; über MCP ausschließlich die vier
-  `mcp__hermesctl__worker_*`-Tools.
+  ausdrücklichem Benutzerwunsch. Direkt sind dafür bevorzugt
+  `hermesctl access <worker> status|explain|capabilities|enable|disable|reset`
+  zulässig; über MCP bevorzugt die fünf `mcp__hermesctl__access_*`-Tools. Die
+  älteren `hermesctl worker ...`- und vier `worker_*`-MCP-Operationen bleiben
+  kompatibel.
 - Änderungen am Worker-Profil gelten bereits für dessen nächsten Auftrag. Sie
   verändern weder die Tools der laufenden Hermes-Sitzung noch einen bereits
   laufenden Worker-Auftrag.
