@@ -80,6 +80,11 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
   Auftrag nicht zusätzlich direkt aus.
 - Worker-Anmeldung, Logout, Modellwahl sowie Container-Start und -Stopp sind
   ausschließlich Operator-Aktionen über `./hermesctl worker ...`.
+- `./hermesctl login-ui` ist ebenfalls ausschließlich eine lokale
+  Operator-Aktion. Die loopback-only API darf nie über einen Skill, MCP, einen
+  Worker-Socket oder ein allgemeines Tool an Hermes weitergereicht werden.
+  Fordere den Benutzer bei fehlender Anmeldung auf, die UI selbst zu öffnen;
+  frage niemals nach Device-, Rückgabe-, OAuth- oder API-Codes.
 - Änderungen eines Workers liegen – sofern sein Profil sie erlaubt – in
   dessen privatem `runtime/workers/<worker>/workspace`, nicht im
   Hermes-Workspace.

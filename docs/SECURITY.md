@@ -4,6 +4,8 @@
 
 ```text
 Benutzer
+  ├─ lokale Login-UI/API (127.0.0.1, zufälliger Bearer-Token)
+  │    └─ festes Codex- oder Claude-CLI-Login im jeweiligen Worker-State
   └─ Hermes-Controller (Docker, Providerzugang, kein Host-Projekt)
        ├─ optional: read-only AGENTS.md und/oder CLAUDE.md
        ├─ optional: lokaler hermesctl-MCP (nur Hermes-/Worker-Policy)
@@ -30,6 +32,13 @@ den zweiten Sandbox-Container zu verwalten.
 ## Garantien dieses Projekts
 
 - Unbekannte Capability-Namen brechen den Start ab (fail closed).
+- Die Abo-Login-API bindet fest an IPv4-Loopback, erzeugt bei jedem Start einen
+  zufälligen Bearer-Token und akzeptiert ausschließlich feste Codex-Device-
+  beziehungsweise Claude.ai-Login-Kommandos. Freie Argumente, API-Key-Modi,
+  Login-Dateizugriff und OpenCode-Providerwahl sind nicht Teil der API.
+- Login-Sitzungen laufen in einem PTY mit begrenztem Ausgabepuffer und
+  begrenzter Eingabe. Je Worker darf nur eine Sitzung laufen; Serverende
+  signalisiert allen laufenden Login-Prozessgruppen den Abbruch.
 - Die gemeinsame `access`-Oberfläche akzeptiert nur die vier Ziele `hermes`,
   `codex`, `claude`, `opencode` und die fünf Features `tool-use`,
   `commandline`, `skills`, `agents-md`, `claude-md`. Sie schreibt weiterhin
@@ -105,7 +114,8 @@ Agent-Kern selbst.
    blockiert, eine Shell ist aber grundsätzlich mächtiger als ein Dateitool.
 
 6. **Operator-Kommandos sind außerhalb der Agent-Policy.** `hermesctl auth` und
-   `hermesctl skills` führen bewusst administrative Hermes-Kommandos aus. Wer
+   `hermesctl skills` sowie die lokale `login-ui` führen bewusst administrative
+   Kommandos aus. Wer
    Compose direkt startet oder Dateien in `runtime/state` ändert, kann die
    Hülle ebenfalls umgehen.
 
@@ -160,6 +170,17 @@ Agent-Kern selbst.
     Inhalt. Vor Aktivierung `worker-context/<worker>` prüfen. Der Broker lädt
     genehmigte `SKILL.md`-Inhalte kontrolliert als Kontext und lässt die
     dynamischen nativen Skill-/Plugin-Flächen gesperrt.
+
+14. **Die Login-UI ist eine sensible lokale Operator-Oberfläche.** Loopback
+    verhindert keinen Zugriff durch andere bereits kompromittierte Prozesse
+    desselben Benutzerkontos. Der Bearer-Token steht absichtlich im startenden
+    Terminal und zunächst im URL-Fragment; Browser-JavaScript entfernt ihn aus
+    der Adresszeile. Während einer Login-Sitzung können Einmalcodes und URLs in
+    der flüchtigen, auf 1 MiB begrenzten Ausgabe erscheinen. Server nach der
+    Anmeldung mit `Ctrl-C` beenden, URL und Token nicht teilen und die UI nicht
+    durch Reverse Proxy, Portweiterleitung oder Container-Portmapping nach
+    außen veröffentlichen. Die dauerhaften Provider-Tokens werden nicht von
+    der UI gelesen, liegen aber weiterhin im jeweiligen Worker-State.
 
 ## Empfohlene Freigabereihenfolge
 

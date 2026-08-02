@@ -308,6 +308,73 @@ sind absichtlich weder Direct- noch MCP-Tools für Hermes:
 ./hermesctl worker codex model none
 ```
 
+Alternativ stellt `hermesctl` für die beiden vendor-eigenen Abo-Flows eine
+lokale API mit HTML-/JavaScript-Oberfläche bereit:
+
+```bash
+# Worker-Images müssen vorher gebaut sein
+./hermesctl worker codex build
+./hermesctl worker claude build
+
+# Bindet hart an 127.0.0.1:8765 und öffnet die lokale UI
+./hermesctl login-ui
+```
+
+Die Startausgabe enthält eine URL mit einem zufälligen Token im URL-Fragment.
+JavaScript übernimmt das Token nur in den `Authorization: Bearer`-Header und
+entfernt das Fragment sofort aus der Adresszeile. Die statische Seite enthält
+keine Credentials; sämtliche API-Endpunkte benötigen das Token.
+
+Die Oberfläche bietet exakt zwei feste Abläufe:
+
+- **Codex CLI:** `codex login --device-auth` für den ChatGPT-Abozugang. Link
+  öffnen und den Einmalcode auf der OpenAI-Seite eingeben.
+- **Claude Code:** `claude auth login --claudeai` für Claude Pro, Max, Team
+  oder Enterprise. Kann der Browser den Container-Callback nicht erreichen,
+  wird der angezeigte Rückgabecode über das Login-Terminal der UI eingefügt.
+
+Das Webterminal zeigt nur die Ausgabe dieses festen Login-Prozesses, nimmt
+höchstens 4096 Zeichen pro Eingabe an und erlaubt Abbruch. Es akzeptiert weder
+frei wählbare CLI-Argumente noch API-Key-/Console-Modi. OpenCode bleibt wegen
+seiner eigenen Provider- und Plugin-Flows beim Operator-Kommando
+`./hermesctl worker opencode login`.
+
+Für einen API-Client kann der Browserstart unterdrückt werden:
+
+```bash
+./hermesctl login-ui --no-browser --port 8765
+```
+
+Nach dem Kopieren des ausgegebenen Bearer-Tokens sind verfügbar:
+
+```text
+GET    /api/v1/health
+GET    /api/v1/workers/{codex|claude}/status
+POST   /api/v1/login-sessions
+GET    /api/v1/login-sessions/{id}?offset=0
+POST   /api/v1/login-sessions/{id}/input
+DELETE /api/v1/login-sessions/{id}
+```
+
+Beispiel mit dem beim Start ausgegebenen Token:
+
+```bash
+LOGIN_UI_TOKEN='<aus-der-Startausgabe>'
+curl -H "Authorization: Bearer $LOGIN_UI_TOKEN" \
+  http://127.0.0.1:8765/api/v1/health
+curl -H "Authorization: Bearer $LOGIN_UI_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"worker":"codex"}' \
+  http://127.0.0.1:8765/api/v1/login-sessions
+```
+
+`POST /api/v1/login-sessions` akzeptiert ausschließlich
+`{"worker":"codex"}` oder `{"worker":"claude"}`. Die API bindet nicht an
+LAN-Adressen, setzt No-Store-/CSP-/Frame-Schutzheader und verwirft fremde
+Browser-Origins. `Ctrl-C` beendet den Server und bricht laufende Login-Prozesse
+ab. Diese Oberfläche ist eine reine Operator-Funktion: Sie wird weder als
+Hermes-Skill noch als MCP-Tool registriert.
+
 `none` verwendet wieder den jeweiligen CLI-Default. Die gleichen
 `status`-/`model`-Befehle gelten mit `claude` und `opencode`. Ein Worker wird
 bei Verwendung automatisch gestartet; manuell geht es mit
@@ -315,9 +382,10 @@ bei Verwendung automatisch gestartet; manuell geht es mit
 `./hermesctl worker <worker> run "Aufgabe"` möglich.
 
 Codex CLI kann sich direkt mit einem ChatGPT-Konto anmelden; der voreingestellte
-Device-Login eignet sich auch für einen Container. Claude Code kann direkt das
-Claude-Pro- oder Claude-Max-Konto verwenden. OpenCode verwaltet seine Provider
-selbst und unterstützt unter anderem ChatGPT Plus/Pro. Ein Claude-Pro-/Max-Abo
+Device-Login eignet sich auch für einen Container. Claude Code kann direkt ein
+Claude-Pro-, Max-, Team- oder Enterprise-Konto verwenden. OpenCode verwaltet
+seine Provider selbst und unterstützt unter anderem ChatGPT Plus/Pro. Ein
+Claude-Pro-/Max-Abo
 wird in OpenCode bewusst **nicht** verwendet: OpenCode hat die entsprechenden
 Drittanbieter-Plugins wegen Anthropic-Vorgaben ab Version 1.3.0 entfernt. Für
 ein Claude-Monatsabo ist deshalb ausschließlich der getrennte Claude-Code-
@@ -325,7 +393,7 @@ Worker vorgesehen.
 
 Offizielle Referenzen:
 
-- [Codex CLI: Anmeldung mit ChatGPT](https://developers.openai.com/codex/cli/)
+- [Codex: Anmeldung mit ChatGPT oder API-Key](https://developers.openai.com/codex/auth/)
 - [Claude Code: Authentifizierung](https://code.claude.com/docs/en/authentication)
 - [Claude Code: CLI](https://code.claude.com/docs/en/cli-usage)
 - [OpenCode: Provider und Account-Grenzen](https://opencode.ai/docs/providers/)

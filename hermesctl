@@ -72,6 +72,7 @@ Administration (operator actions, never agent tools):
   model [Hermes model args]    Choose provider/model with the official wizard
   anthropic-login [auth args]  Add an Anthropic OAuth account interactively
   auth [Hermes auth args]      Run the official Hermes auth command
+  login-ui [UI args]           Local API/HTML UI for worker subscription login
   skills [Hermes skills args]  Install/list skills as the operator
   worker KIND ACTION [ARGS]    Build/login/configure a coding worker
   verify                       Run tests, build, and print policy evidence
@@ -996,6 +997,10 @@ Hermes dokumentiert OAuth derzeit nur für Claude Max mit zusätzlich gekauften
 Extra-Usage-Credits; Anfragen werden diesen Zusatz-Credits berechnet.
 EOF
     run_admin auth add anthropic "$@" --type oauth
+    ;;
+  login-ui)
+    ensure_layout
+    exec python3 "$ROOT_DIR/container/login_ui.py" --root "$ROOT_DIR" "$@"
     ;;
   skills)
     ensure_layout

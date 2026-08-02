@@ -17,3 +17,7 @@ Codex immer `access codex explain`: Sein `tool-use` ist `[special]`, weil es
 das Shell-Tool read-only verwendet. Weise auf model-only, inspection-only oder
 Claude/OpenCode als Alternativen hin. Worker-Skills sind kontrolliert
 injizierte SKILL.md-Inhalte, keine dynamische native Skill-Freigabe.
+
+Worker-Aboanmeldungen über `./hermesctl login-ui` bleiben reine
+Operator-Aktionen. Fordere niemals Login-Codes an und versuche nicht, die
+lokale Login-API über Skills, MCP oder Worker-Sockets aufzurufen.

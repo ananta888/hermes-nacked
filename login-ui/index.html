@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hermes – Abo-Anmeldung</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">HERMES NAKED · LOKALER OPERATOR</p>
+        <h1>Abo-Anmeldung</h1>
+        <p class="lead">
+          Melde die isolierten Codex- und Claude-Worker über ihre originalen
+          CLI-Flows an. Diese Seite läuft ausschließlich auf
+          <code>127.0.0.1</code> und gibt Hermes selbst kein Login-Werkzeug.
+        </p>
+      </header>
+
+      <section id="connection" class="notice" aria-live="polite">
+        API-Verbindung wird geprüft …
+      </section>
+
+      <section class="workers" aria-label="Worker-Anmeldungen">
+        <article class="worker-card">
+          <div>
+            <p class="tag">ChatGPT-Abo</p>
+            <h2>Codex CLI</h2>
+            <p>
+              Startet <code>codex login --device-auth</code>. Öffne den
+              angezeigten Link und gib den Einmalcode auf der OpenAI-Seite ein.
+            </p>
+          </div>
+          <div class="actions">
+            <button data-status-worker="codex" class="secondary">Status prüfen</button>
+            <button data-login-worker="codex">Mit ChatGPT anmelden</button>
+          </div>
+        </article>
+
+        <article class="worker-card">
+          <div>
+            <p class="tag">Claude Pro / Max / Team / Enterprise</p>
+            <h2>Claude Code</h2>
+            <p>
+              Startet <code>claude auth login --claudeai</code>. Falls der
+              Browser einen Rückgabecode zeigt, füge ihn unten ins Terminal ein.
+            </p>
+          </div>
+          <div class="actions">
+            <button data-status-worker="claude" class="secondary">Status prüfen</button>
+            <button data-login-worker="claude">Mit Claude.ai anmelden</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="terminal-panel" aria-labelledby="terminal-heading">
+        <div class="terminal-header">
+          <div>
+            <p class="tag">Originale CLI-Ausgabe</p>
+            <h2 id="terminal-heading">Login-Terminal</h2>
+          </div>
+          <div class="actions compact">
+            <button id="open-link" class="secondary" disabled>Login-Link öffnen</button>
+            <button id="cancel-session" class="danger" disabled>Abbrechen</button>
+          </div>
+        </div>
+        <p id="session-state" class="session-state">Noch keine Login-Sitzung gestartet.</p>
+        <pre id="terminal-output" tabindex="0" aria-live="polite"></pre>
+        <form id="terminal-input-form" autocomplete="off">
+          <label for="terminal-input">Antwort oder Browser-Rückgabecode</label>
+          <div class="input-row">
+            <input
+              id="terminal-input"
+              name="terminal-input"
+              maxlength="4096"
+              placeholder="Nur eingeben, wenn die CLI danach fragt"
+              disabled
+            >
+            <button id="send-input" type="submit" disabled>An Terminal senden</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="status-panel" aria-labelledby="status-heading">
+        <p class="tag">Read-only</p>
+        <h2 id="status-heading">Worker-Status</h2>
+        <pre id="status-output">Noch nicht geprüft.</pre>
+      </section>
+
+      <footer>
+        Credentials werden nicht von dieser Web-App gelesen. Codex und Claude
+        speichern sie ausschließlich in ihrem eigenen persistenten Worker-State.
+      </footer>
+    </main>
+  </body>
+</html>
