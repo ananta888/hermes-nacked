@@ -1,0 +1,45 @@
+# Intentionally contains no provider credentials. Configure those in .env or
+# with `./hermesctl auth ...`.
+_config_version: 33
+
+agent:
+  coding_context: "off"
+  system_prompt: ""
+  disabled_toolsets: []
+
+platform_toolsets:
+  cli: []
+
+terminal:
+  backend: docker
+  docker_mount_cwd_to_workspace: true
+  docker_run_as_host_user: true
+  docker_forward_env: []
+  docker_env:
+    HOME: /tmp/hermes-home
+  docker_volumes: []
+  docker_network: false
+  container_cpu: 1
+  container_memory: 1024
+  container_persistent: false
+  docker_persist_across_processes: false
+
+approvals:
+  mode: manual
+  timeout: 300
+
+skills:
+  write_approval: true
+
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  write_approval: true
+
+compression:
+  enabled: false
+
+checkpoints:
+  enabled: false
+
+mcp_servers: {}

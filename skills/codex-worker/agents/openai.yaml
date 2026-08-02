@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Worker"
+  short_description: "Codex CLI isoliert delegieren"
+  default_prompt: "Use $codex-worker to delegate this coding task to the isolated Codex CLI worker."

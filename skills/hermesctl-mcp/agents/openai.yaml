@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermesctl MCP"
+  short_description: "Hermes-Rechte über MCP steuern"
+  default_prompt: "Use $hermesctl-mcp to inspect or change this Hermes instance policy through its scoped MCP tools."

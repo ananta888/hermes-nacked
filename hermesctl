@@ -1,0 +1,628 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+ROOT_DIR=${HERMESCTL_ROOT:-$SCRIPT_DIR}
+RUNTIME_DIR="$ROOT_DIR/runtime"
+STATE_DIR="$RUNTIME_DIR/state"
+WORKSPACE_DIR="$RUNTIME_DIR/workspace"
+CAPABILITIES_FILE=${HERMESCTL_CAPABILITIES_FILE:-$ROOT_DIR/.hermes-capabilities}
+POLICY_MODULE_DIR=${HERMESCTL_POLICY_DIR:-$ROOT_DIR/container}
+POLICY_MODULE_NAME=policy
+PROJECT_SKILLS_DIR="$ROOT_DIR/skills"
+CONTROL_ONLY=${HERMESCTL_CONTROL_ONLY:-0}
+if [[ "$CONTROL_ONLY" == 1 ]]; then
+  # Both the controller MCP process and the nested direct-control sandbox
+  # receive the policy module at this fixed, read-only path.
+  POLICY_MODULE_DIR=/usr/local/lib
+  POLICY_MODULE_NAME=hermesctl_policy
+fi
+
+export HERMES_HOST_ROOT="$ROOT_DIR"
+export HERMES_UID="${HERMES_UID:-$(id -u)}"
+export HERMES_GID="${HERMES_GID:-$(id -g)}"
+# Separately selectable compose overlays make intentionally running workers
+# look like orphans to commands that do not include that worker's overlay.
+export COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}"
+
+BASE_COMPOSE=(docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml")
+SANDBOX_COMPOSE=(-f "$ROOT_DIR/compose.sandbox.yaml")
+CONTROL_COMPOSE=(-f "$ROOT_DIR/compose.control.yaml")
+ORCHESTRATOR_COMPOSE=(-f "$ROOT_DIR/compose.orchestrator.yaml")
+WORKER_KINDS=(codex claude opencode)
+ALL_WORKER_COMPOSE=()
+for worker_kind in "${WORKER_KINDS[@]}"; do
+  ALL_WORKER_COMPOSE+=(-f "$ROOT_DIR/compose.worker-$worker_kind.yaml")
+done
+
+usage() {
+  sed -n '2,80p' <<'EOF'
+Usage: ./hermesctl COMMAND [ARGS]
+
+Start:
+  init                         Create isolated state/workspace (zero rights)
+  build                        Build the thin image on official Hermes
+  chat [Hermes chat args]      Interactive policy-enforced chat
+  ask "prompt"                 One-shot policy-enforced request
+
+Rights (independent switches):
+  enable CAPABILITY [...]      Enable one or more capabilities
+  disable CAPABILITY [...]     Disable one or more capabilities
+  reset                        Disable every model-facing capability
+  status                       Show the effective policy
+  capabilities                 List available switches
+
+Administration (operator actions, never agent tools):
+  model [Hermes model args]    Choose provider/model with the official wizard
+  anthropic-login [auth args]  Add an Anthropic OAuth account interactively
+  auth [Hermes auth args]      Run the official Hermes auth command
+  skills [Hermes skills args]  Install/list skills as the operator
+  worker KIND ACTION [ARGS]    Build/login/configure a coding worker
+  verify                       Run tests, build, and print policy evidence
+
+Worker actions:
+  build                        Build this worker's pinned CLI image
+  login [CLI login args]       Interactive account login (operator only)
+  logout                       Remove this worker's stored login
+  status                       Show version, model, and login state
+  model [MODEL|none]           Show, set, or clear the worker model
+  start | stop                 Start or stop the isolated worker service
+  run "prompt"                Operator test request through its Unix socket
+
+Worker kinds: codex, claude, opencode
+
+Capabilities:
+  files          read/write/search only in runtime/workspace
+  commandline    shell in a second hardened Docker container, no network
+  skills         skill list/view/manage; no bundled skills; writes need approval
+  web            Hermes web search/extract tools
+  code           execute_code in the same command sandbox
+  planning       in-session todo and clarify tools
+  shell-network  network egress for commandline/code (separate modifier)
+  orchestrator   load the opt-in AGENTS.md explainer/orchestrator context
+  hermesctl-direct  let Hermes manage next-session rights through the CLI
+                    (requires skills + commandline)
+  hermesctl-mcp  let Hermes manage next-session rights through scoped MCP
+                 (requires skills)
+  codex-direct | claude-direct | opencode-direct
+                 direct skill command through a private Unix socket
+                 (each requires skills + commandline; no shell network)
+  codex-mcp | claude-mcp | opencode-mcp
+                 two scoped MCP tools for exactly one isolated worker
+                 (each requires skills)
+
+Aliases: tools=file(s), shell/terminal=commandline
+EOF
+}
+
+die() {
+  printf 'hermesctl: %s\n' "$*" >&2
+  exit 64
+}
+
+ensure_layout() {
+  if [[ "$CONTROL_ONLY" == 1 ]]; then
+    [[ -f "$CAPABILITIES_FILE" ]] || die 'capability control file is not mounted'
+    return
+  fi
+  mkdir -p "$STATE_DIR" "$WORKSPACE_DIR" "$STATE_DIR/skills"
+  local worker
+  for worker in "${WORKER_KINDS[@]}"; do
+    mkdir -p \
+      "$RUNTIME_DIR/workers/$worker/state" \
+      "$RUNTIME_DIR/workers/$worker/workspace" \
+      "$RUNTIME_DIR/workers/$worker/socket"
+    if [[ ! -f "$RUNTIME_DIR/workers/$worker/workspace/.gitkeep" ]]; then
+      : > "$RUNTIME_DIR/workers/$worker/workspace/.gitkeep"
+    fi
+    chmod 700 \
+      "$RUNTIME_DIR/workers/$worker/state" \
+      "$RUNTIME_DIR/workers/$worker/socket"
+    chmod 750 "$RUNTIME_DIR/workers/$worker/workspace"
+  done
+  mkdir -p \
+    "$RUNTIME_DIR/workers/codex/state/.codex" \
+    "$RUNTIME_DIR/workers/claude/state/.claude" \
+    "$RUNTIME_DIR/workers/opencode/state/.local/share/opencode" \
+    "$RUNTIME_DIR/workers/opencode/state/.config/opencode" \
+    "$RUNTIME_DIR/workers/opencode/state/.cache/opencode"
+  chmod 700 \
+    "$RUNTIME_DIR/workers/codex/state/.codex" \
+    "$RUNTIME_DIR/workers/claude/state/.claude" \
+    "$RUNTIME_DIR/workers/opencode/state/.local" \
+    "$RUNTIME_DIR/workers/opencode/state/.config" \
+    "$RUNTIME_DIR/workers/opencode/state/.cache"
+  if [[ ! -f "$STATE_DIR/config.yaml" ]]; then
+    cp "$ROOT_DIR/config/config.yaml" "$STATE_DIR/config.yaml"
+  fi
+  if [[ ! -f "$STATE_DIR/.no-bundled-skills" ]]; then
+    printf '%s\n' 'Bundled skill seeding disabled by hermes-naked.' > "$STATE_DIR/.no-bundled-skills"
+  fi
+  # The official image seeds SOUL.md when absent. An existing empty file plus
+  # HERMES_IGNORE_RULES=1 guarantees that no custom identity is injected.
+  if [[ ! -e "$STATE_DIR/SOUL.md" ]]; then
+    : > "$STATE_DIR/SOUL.md"
+  fi
+  if [[ ! -f "$CAPABILITIES_FILE" ]]; then
+    : > "$CAPABILITIES_FILE"
+  fi
+  if [[ -d "$PROJECT_SKILLS_DIR" ]]; then
+    # These project-owned skills are installed but remain invisible to the
+    # model until the independent `skills` capability is granted.
+    cp -a "$PROJECT_SKILLS_DIR/." "$STATE_DIR/skills/"
+  fi
+  chmod 600 "$CAPABILITIES_FILE" "$STATE_DIR/.no-bundled-skills" "$STATE_DIR/SOUL.md"
+}
+
+raw_capabilities() {
+  if [[ -f "$CAPABILITIES_FILE" ]]; then
+    tr '\n' ',' < "$CAPABILITIES_FILE"
+  fi
+}
+
+policy_json() {
+  local raw=${1-$(raw_capabilities)}
+  python3 - "$raw" "$POLICY_MODULE_DIR" "$POLICY_MODULE_NAME" <<'PY'
+import importlib
+import json
+import sys
+sys.path.insert(0, sys.argv[2])
+policy_module = importlib.import_module(sys.argv[3])
+PolicyError = policy_module.PolicyError
+parse_capabilities = policy_module.parse_capabilities
+
+try:
+    policy = parse_capabilities(sys.argv[1])
+except PolicyError as exc:
+    print(f"hermesctl: {exc}", file=sys.stderr)
+    raise SystemExit(64)
+
+print(json.dumps({
+    "capabilities": policy.capabilities,
+    "toolsets": policy.toolsets,
+    "needs_sandbox": policy.needs_sandbox,
+    "sandbox_network": policy.sandbox_network,
+    "mount_skills": policy.mount_skills,
+    "mount_control": policy.mount_control,
+      "direct_control": policy.direct_control,
+      "mcp_control": "hermesctl-mcp" in policy.capabilities,
+      "enable_mcp": policy.enable_mcp,
+    "load_orchestrator": policy.load_orchestrator,
+    "direct_workers": policy.direct_workers,
+    "mcp_workers": policy.mcp_workers,
+    "workers": policy.workers,
+}))
+PY
+}
+
+policy_field() {
+  local field=$1
+  local json=$2
+  python3 - "$field" "$json" <<'PY'
+import json
+import sys
+value = json.loads(sys.argv[2])[sys.argv[1]]
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, list):
+    print(",".join(value))
+else:
+    print(value)
+PY
+}
+
+write_capabilities() {
+  local action=$1
+  shift
+  (($# > 0)) || die "$action needs at least one capability"
+  local current
+  current=$(raw_capabilities)
+  local normalized
+  normalized=$(python3 - "$action" "$current" "$POLICY_MODULE_DIR" "$POLICY_MODULE_NAME" "$@" <<'PY'
+import importlib
+import sys
+sys.path.insert(0, sys.argv[3])
+policy_module = importlib.import_module(sys.argv[4])
+PolicyError = policy_module.PolicyError
+normalize_capability = policy_module.normalize_capability
+parse_capabilities = policy_module.parse_capabilities
+
+action, current = sys.argv[1:3]
+requested = sys.argv[5:]
+current_values = set(parse_capabilities(current).capabilities)
+requested_values = {normalize_capability(value) for value in requested}
+if action == "enable":
+    result = current_values | requested_values
+else:
+    result = current_values - requested_values
+try:
+    policy = parse_capabilities(",".join(sorted(result)))
+except PolicyError as exc:
+    print(f"hermesctl: {exc}", file=sys.stderr)
+    raise SystemExit(64)
+print("\n".join(policy.capabilities))
+PY
+  )
+  commit_capabilities "$normalized"
+}
+
+commit_capabilities() {
+  local content=${1-}
+  if [[ "$CONTROL_ONLY" == 1 ]]; then
+    # A bind-mounted file cannot be atomically replaced inside a container.
+    # Lock and rewrite that exact inode instead.
+    python3 - "$CAPABILITIES_FILE" "$content" <<'PY'
+import fcntl
+import os
+import sys
+
+path, content = sys.argv[1:]
+with open(path, "r+", encoding="utf-8") as handle:
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    handle.seek(0)
+    handle.truncate()
+    if content:
+        handle.write(content + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+    fcntl.flock(handle, fcntl.LOCK_UN)
+PY
+    return
+  fi
+
+  local temporary
+  temporary=$(mktemp "$RUNTIME_DIR/.capabilities.XXXXXX")
+  if [[ -n "$content" ]]; then
+    printf '%s\n' "$content" > "$temporary"
+  fi
+  chmod 600 "$temporary"
+  mv "$temporary" "$CAPABILITIES_FILE"
+}
+
+compose_for_policy() {
+  local json=$1
+  if [[ $(policy_field needs_sandbox "$json") == true ]]; then
+    [[ -S /var/run/docker.sock ]] || die 'Docker socket is required for files/commandline/code'
+    printf '%s\0' "${BASE_COMPOSE[@]}" "${SANDBOX_COMPOSE[@]}"
+  else
+    printf '%s\0' "${BASE_COMPOSE[@]}"
+  fi
+  if [[ $(policy_field mount_control "$json") == true ]]; then
+    printf '%s\0' "${CONTROL_COMPOSE[@]}"
+  fi
+  if [[ $(policy_field load_orchestrator "$json") == true ]]; then
+    printf '%s\0' "${ORCHESTRATOR_COMPOSE[@]}"
+  fi
+  local workers worker
+  workers=$(policy_field workers "$json")
+  if [[ -n "$workers" ]]; then
+    while IFS= read -r worker; do
+      [[ -n "$worker" ]] || continue
+      printf '%s\0' -f "$ROOT_DIR/compose.worker-$worker.yaml"
+    done < <(tr ',' '\n' <<< "$workers")
+  fi
+}
+
+run_container() {
+  local raw json
+  raw=$(raw_capabilities)
+  json=$(policy_json "$raw")
+  local -a compose_command=()
+  while IFS= read -r -d '' item; do
+    compose_command+=("$item")
+  done < <(compose_for_policy "$json")
+  HERMES_CAPABILITIES="$raw" "${compose_command[@]}" run --rm \
+    -e "HERMES_CAPABILITIES=$raw" hermes "$@"
+}
+
+run_admin() {
+  # Administrative commands are explicit operator actions. They do not need
+  # the model policy or Docker socket and therefore always use the base file.
+  HERMES_CAPABILITIES='' "${BASE_COMPOSE[@]}" run --rm \
+    -e HERMES_CAPABILITIES= hermes hermes "$@"
+}
+
+normalize_worker() {
+  local worker=${1:-}
+  case "$worker" in
+    codex|claude|opencode) printf '%s\n' "$worker" ;;
+    *) die "unknown worker: ${worker:-missing} (expected codex, claude, or opencode)" ;;
+  esac
+}
+
+worker_compose() {
+  local worker=$1
+  printf '%s\0' "${BASE_COMPOSE[@]}" -f "$ROOT_DIR/compose.worker-$worker.yaml"
+}
+
+worker_command() {
+  local worker
+  worker=$(normalize_worker "${1:-}")
+  shift || true
+  local action=${1:-status}
+  if (($# > 0)); then
+    shift
+  fi
+  local service="worker-$worker"
+  local -a compose_command=()
+  while IFS= read -r -d '' item; do
+    compose_command+=("$item")
+  done < <(worker_compose "$worker")
+
+  case "$action" in
+    build)
+      "${compose_command[@]}" build "$service"
+      ;;
+    login)
+      case "$worker" in
+        codex)
+          if (($# == 0)); then
+            "${compose_command[@]}" run --rm --entrypoint codex \
+              "$service" -c 'cli_auth_credentials_store="file"' \
+              login --device-auth
+          else
+            "${compose_command[@]}" run --rm --entrypoint codex \
+              "$service" -c 'cli_auth_credentials_store="file"' \
+              login "$@"
+          fi
+          ;;
+        claude)
+          "${compose_command[@]}" run --rm --entrypoint claude \
+            "$service" auth login "$@"
+          ;;
+        opencode)
+          "${compose_command[@]}" run --rm --entrypoint opencode \
+            "$service" auth login "$@"
+          ;;
+      esac
+      ;;
+    logout)
+      case "$worker" in
+        codex)
+          "${compose_command[@]}" run --rm --entrypoint codex \
+            "$service" logout "$@"
+          ;;
+        claude)
+          "${compose_command[@]}" run --rm --entrypoint claude \
+            "$service" auth logout "$@"
+          ;;
+        opencode)
+          "${compose_command[@]}" run --rm --entrypoint opencode \
+            "$service" auth logout "$@"
+          ;;
+      esac
+      ;;
+    status)
+      local model_file="$RUNTIME_DIR/workers/$worker/state/.worker-model"
+      local model=default
+      if [[ -s "$model_file" ]]; then
+        model=$(<"$model_file")
+      fi
+      printf 'Worker: %s\nModel:  %s\nState:  %s\nWorkspace: %s\n' \
+        "$worker" "$model" \
+        "$RUNTIME_DIR/workers/$worker/state" \
+        "$RUNTIME_DIR/workers/$worker/workspace"
+      set +e
+      case "$worker" in
+        codex)
+          "${compose_command[@]}" run --rm --entrypoint codex \
+            "$service" login status
+          ;;
+        claude)
+          "${compose_command[@]}" run --rm --entrypoint claude \
+            "$service" auth status --text
+          ;;
+        opencode)
+          "${compose_command[@]}" run --rm --entrypoint opencode \
+            "$service" auth list
+          ;;
+      esac
+      local status_code=$?
+      set -e
+      printf 'Auth status exit code: %s\n' "$status_code"
+      ;;
+    model)
+      local model_file="$RUNTIME_DIR/workers/$worker/state/.worker-model"
+      if (($# == 0)); then
+        if [[ -s "$model_file" ]]; then
+          printf '%s\n' "$(<"$model_file")"
+        else
+          printf 'default\n'
+        fi
+        return
+      fi
+      (($# == 1)) || die 'worker model accepts exactly one model id or none'
+      if [[ "$1" == none ]]; then
+        : > "$model_file"
+        chmod 600 "$model_file"
+        printf 'Cleared %s worker model; CLI default will be used.\n' "$worker"
+        return
+      fi
+      [[ "$1" =~ ^[A-Za-z0-9_.:/@+-]+$ ]] || die 'model id contains unsupported characters'
+      local temporary
+      temporary=$(mktemp "$RUNTIME_DIR/workers/$worker/state/.worker-model.XXXXXX")
+      printf '%s\n' "$1" > "$temporary"
+      chmod 600 "$temporary"
+      mv "$temporary" "$model_file"
+      printf 'Configured %s worker model: %s\n' "$worker" "$1"
+      ;;
+    start)
+      "${compose_command[@]}" up -d --wait --wait-timeout 60 "$service"
+      ;;
+    stop)
+      "${compose_command[@]}" stop "$service"
+      ;;
+    run)
+      (($# > 0)) || die 'worker run needs a prompt'
+      "${compose_command[@]}" up -d --wait --wait-timeout 60 "$service"
+      local socket_variable="HERMES_${worker^^}_WORKER_SOCKET"
+      local socket_path="$RUNTIME_DIR/workers/$worker/socket/worker.sock"
+      env PYTHONPATH="$ROOT_DIR/container" "$socket_variable=$socket_path" \
+        python3 "$ROOT_DIR/container/workerctl.py" "$worker" run "$*"
+      ;;
+    *)
+      die "unknown worker action: $action"
+      ;;
+  esac
+}
+
+show_status() {
+  local json caps toolsets
+  json=$(policy_json)
+  caps=$(policy_field capabilities "$json")
+  toolsets=$(policy_field toolsets "$json")
+  printf 'Capabilities:      %s\n' "${caps:-none (pure chat)}"
+  printf 'Hermes toolsets:   %s\n' "${toolsets:-none}"
+  if [[ $(policy_field load_orchestrator "$json") == true ]]; then
+    printf 'Orchestrator:      AGENTS.md loaded (opt-in)\n'
+  else
+    printf 'Context files:     ignored (AGENTS.md, SOUL.md, .hermes.md, CLAUDE.md)\n'
+  fi
+  printf 'Memory:            disabled and not injected\n'
+  printf 'Bundled skills:    disabled; project skills installed but policy-gated\n'
+  printf 'Plugins:           disabled\n'
+  printf 'Hermesctl MCP:     %s\n' "$(policy_field mcp_control "$json")"
+  printf 'Hermesctl direct:  %s\n' "$(policy_field direct_control "$json")"
+  printf 'Worker direct:     %s\n' "$(policy_field direct_workers "$json" | sed 's/^$/none/')"
+  printf 'Worker MCP:        %s\n' "$(policy_field mcp_workers "$json" | sed 's/^$/none/')"
+  printf 'Command sandbox:  %s\n' "$(policy_field needs_sandbox "$json")"
+  printf 'Sandbox network:  %s\n' "$(policy_field sandbox_network "$json")"
+  printf 'Workspace:         %s\n' "$WORKSPACE_DIR"
+}
+
+command=${1:-help}
+if (($# > 0)); then
+  shift
+fi
+
+if [[ "$CONTROL_ONLY" == 1 ]]; then
+  case "$command" in
+    enable|disable|reset|status|capabilities|help|-h|--help) ;;
+    *) die "command is unavailable through model-facing hermesctl: $command" ;;
+  esac
+fi
+
+case "$command" in
+  init)
+    ensure_layout
+    printf 'Initialized with zero model-facing capabilities.\n'
+    show_status
+    ;;
+  build)
+    ensure_layout
+    "${BASE_COMPOSE[@]}" build --pull hermes
+    ;;
+  enable)
+    ensure_layout
+    write_capabilities enable "$@"
+    show_status
+    ;;
+  disable)
+    ensure_layout
+    write_capabilities disable "$@"
+    show_status
+    ;;
+  reset)
+    ensure_layout
+    commit_capabilities ''
+    show_status
+    ;;
+  status)
+    ensure_layout
+    show_status
+    ;;
+  capabilities)
+    usage | sed -n '/^Capabilities:/,$p'
+    ;;
+  chat)
+    ensure_layout
+    run_container hermes-naked chat "$@"
+    ;;
+  ask)
+    ensure_layout
+    (($# > 0)) || die 'ask needs a prompt'
+    run_container hermes-naked chat --query "$*"
+    ;;
+  auth)
+    ensure_layout
+    run_admin auth "$@"
+    ;;
+  model)
+    ensure_layout
+    run_admin model "$@"
+    ;;
+  anthropic-login)
+    ensure_layout
+    cat >&2 <<'EOF'
+Anthropic-Hinweis: Hermes kann das reguläre Claude-Pro-Kontingent nicht nutzen.
+Hermes dokumentiert OAuth derzeit nur für Claude Max mit zusätzlich gekauften
+Extra-Usage-Credits; Anfragen werden diesen Zusatz-Credits berechnet.
+EOF
+    run_admin auth add anthropic "$@" --type oauth
+    ;;
+  skills)
+    ensure_layout
+    run_admin skills "$@"
+    ;;
+  worker)
+    ensure_layout
+    worker_command "$@"
+    ;;
+  verify)
+    ensure_layout
+    verify_raw_before=$(raw_capabilities)
+    python3 -m unittest discover -s "$ROOT_DIR/tests" -v
+    "${BASE_COMPOSE[@]}" config --quiet
+    "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" config --quiet
+    "${BASE_COMPOSE[@]}" build hermes
+    "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" build \
+      worker-codex worker-claude worker-opencode
+    env COMPOSE_IGNORE_ORPHANS=true \
+      "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" up -d --wait \
+      --wait-timeout 60 worker-codex worker-claude worker-opencode
+    printf '\nBaseline policy report (forced empty):\n'
+    HERMES_CAPABILITIES='' "${BASE_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES= hermes hermes-naked --policy-report
+    printf '\nConfigured policy report:\n'
+    run_container hermes-naked --policy-report
+    printf '\nAir-gapped command-sandbox probe (temporary files capability):\n'
+    HERMES_CAPABILITIES='files' "${BASE_COMPOSE[@]}" "${SANDBOX_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=files hermes hermes-naked --sandbox-probe
+    printf '\nDirect hermesctl sandbox probe (temporary policy):\n'
+    HERMES_CAPABILITIES='commandline,skills,hermesctl-direct' \
+      "${BASE_COMPOSE[@]}" "${SANDBOX_COMPOSE[@]}" "${CONTROL_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=commandline,skills,hermesctl-direct \
+      hermes hermes-naked --sandbox-probe
+    printf '\nScoped hermesctl MCP probe (temporary policy):\n'
+    HERMES_CAPABILITIES='skills,hermesctl-mcp' \
+      "${BASE_COMPOSE[@]}" "${CONTROL_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=skills,hermesctl-mcp \
+      hermes hermes-naked --mcp-probe
+    printf '\nDirect coding-worker sandbox probe (temporary policy):\n'
+    HERMES_CAPABILITIES='commandline,skills,codex-direct,claude-direct,opencode-direct' \
+      "${BASE_COMPOSE[@]}" "${SANDBOX_COMPOSE[@]}" \
+      "${ALL_WORKER_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=commandline,skills,codex-direct,claude-direct,opencode-direct \
+      hermes hermes-naked --sandbox-probe
+    printf '\nScoped coding-worker MCP probe (temporary policy):\n'
+    HERMES_CAPABILITIES='skills,codex-mcp,claude-mcp,opencode-mcp' \
+      "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=skills,codex-mcp,claude-mcp,opencode-mcp \
+      hermes hermes-naked --mcp-probe
+    printf '\nAGENTS.md orchestrator probe (temporary policy):\n'
+    HERMES_CAPABILITIES='orchestrator' \
+      "${BASE_COMPOSE[@]}" "${ORCHESTRATOR_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=orchestrator \
+      hermes hermes-naked --orchestrator-probe
+    [[ $(raw_capabilities) == "$verify_raw_before" ]] || \
+      die 'verify unexpectedly changed the configured capabilities'
+    printf '\nConfigured capabilities remained unchanged.\n'
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    die "unknown command: $command"
+    ;;
+esac

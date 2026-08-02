@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Worker"
+  short_description: "OpenCode isoliert delegieren"
+  default_prompt: "Use $opencode-worker to delegate this coding task to the isolated OpenCode worker."

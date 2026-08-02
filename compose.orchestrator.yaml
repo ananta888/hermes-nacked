@@ -1,0 +1,8 @@
+# Added only when the orchestrator context capability is active.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/AGENTS.md
+        target: ${HERMES_HOST_ROOT}/runtime/workspace/AGENTS.md
+        read_only: true

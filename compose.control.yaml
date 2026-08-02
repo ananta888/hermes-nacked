@@ -1,0 +1,7 @@
+# Added only when the operator grants direct or MCP-based self-management.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/.hermes-capabilities
+        target: /control/.hermes-capabilities

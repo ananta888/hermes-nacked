@@ -1,0 +1,6 @@
+.env
+.hermes-capabilities
+runtime/
+.git/
+__pycache__/
+*.pyc

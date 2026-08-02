@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermesctl Direct"
+  short_description: "Hermes-Rechte direkt per CLI steuern"
+  default_prompt: "Use $hermesctl-direct to inspect or change this Hermes instance policy through the direct CLI."

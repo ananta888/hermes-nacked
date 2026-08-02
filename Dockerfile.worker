@@ -1,0 +1,23 @@
+ARG WORKER_NODE_IMAGE=node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+FROM ${WORKER_NODE_IMAGE}
+
+ARG WORKER_KIND
+ARG WORKER_CLI_VERSION
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       bash ca-certificates curl git openssh-client ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN case "${WORKER_KIND}" in \
+      codex) npm install --global "@openai/codex@${WORKER_CLI_VERSION}" ;; \
+      claude) npm install --global "@anthropic-ai/claude-code@${WORKER_CLI_VERSION}" ;; \
+      opencode) npm install --global "opencode-ai@${WORKER_CLI_VERSION}" ;; \
+      *) printf 'unknown WORKER_KIND: %s\n' "${WORKER_KIND}" >&2; exit 64 ;; \
+    esac \
+    && npm cache clean --force
+
+COPY --chmod=0555 container/worker-server.mjs /usr/local/lib/worker-server.mjs
+
+WORKDIR /workspace
+ENTRYPOINT ["node", "/usr/local/lib/worker-server.mjs"]

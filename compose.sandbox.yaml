@@ -1,0 +1,8 @@
+# Added by hermesctl only when files/commandline/code capabilities need the
+# nested Docker sandbox. The model-facing sandbox never receives this socket.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock

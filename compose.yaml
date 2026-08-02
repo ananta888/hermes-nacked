@@ -1,0 +1,81 @@
+name: hermes-naked
+
+services:
+  hermes:
+    build:
+      context: .
+      args:
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:cbcbe555961c3f36124db521a179b5b61eea00acf5629a27086c9350899df191}
+    image: hermes-naked:local
+    command: ["hermes-naked"]
+    stdin_open: true
+    tty: true
+    cap_drop:
+      - ALL
+    # The official s6 entrypoint starts as root, remaps its /etc/passwd entry to
+    # the host UID, prepares the data directory, then drops to the unprivileged
+    # hermes user. The controller rootfs is ephemeral; /opt/hermes remains
+    # root-owned. The model-facing command sandbox gets none of these caps.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 384
+    mem_limit: 2g
+    cpus: 2
+    tmpfs:
+      - /run:rw,exec,nosuid,nodev,size=128m
+      - /tmp:rw,exec,nosuid,nodev,size=512m
+      - /var/tmp:rw,noexec,nosuid,nodev,size=128m
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HERMES_HOST_ROOT: ${HERMES_HOST_ROOT:?run through ./hermesctl}
+      HERMES_HOME: ${HERMES_HOST_ROOT:?run through ./hermesctl}/runtime/state
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_SAFE_MODE: "1"
+      HERMES_IGNORE_RULES: "1"
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+      HERMES_DASHBOARD: "0"
+      HERMES_WRITE_SAFE_ROOT: ${HERMES_HOST_ROOT}/runtime/workspace
+      TERMINAL_BACKEND: docker
+      TERMINAL_CWD: ${HERMES_HOST_ROOT}/runtime/workspace
+      TERMINAL_DOCKER_IMAGE: ${HERMES_SANDBOX_IMAGE:-python:3.13-slim-bookworm}
+      TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE: "true"
+      TERMINAL_DOCKER_RUN_AS_HOST_USER: "true"
+      TERMINAL_DOCKER_FORWARD_ENV: "[]"
+      TERMINAL_DOCKER_ENV: '{"HOME":"/tmp/hermes-home"}'
+      TERMINAL_DOCKER_VOLUMES: "[]"
+      TERMINAL_DOCKER_NETWORK: "false"
+      TERMINAL_CONTAINER_CPU: "1"
+      TERMINAL_CONTAINER_MEMORY: "1024"
+      TERMINAL_CONTAINER_PERSISTENT: "false"
+      TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES: "false"
+      TERMINAL_DOCKER_ORPHAN_REAPER: "true"
+    volumes:
+      # Mount only dedicated state/workspace paths, at the identical absolute
+      # host paths. The nested Docker backend can then mount the workspace
+      # without ever seeing the repository or the rest of the host filesystem.
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/state
+        target: ${HERMES_HOST_ROOT}/runtime/state
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/workspace
+        target: ${HERMES_HOST_ROOT}/runtime/workspace
+    # Local inference servers run on the Docker host. This name is available
+    # on Docker Desktop already; host-gateway makes it work on Linux as well.
+    # It affects only the controller network, never the nested command sandbox.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - controller
+
+networks:
+  controller:
+    driver: bridge

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Worker"
+  short_description: "Claude Code isoliert delegieren"
+  default_prompt: "Use $claude-worker to delegate this coding task to the isolated Claude Code worker."
