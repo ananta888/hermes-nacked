@@ -1,0 +1,25 @@
+# Added only for explicitly enabled generic agent direct/MCP capabilities.
+services:
+  hermes:
+    volumes:
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/registry/agents
+        target: /agent-runtime/runtime/control/agents
+        read_only: true
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/sockets/agents
+        target: /agent-sockets
+        read_only: true
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/jobs
+        target: /agent-runtime/runtime/jobs
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/artifacts
+        target: /agent-runtime/runtime/artifacts
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/locks
+        target: /agent-runtime/runtime/locks
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/teams
+        target: /agent-runtime/runtime/teams
+        read_only: true

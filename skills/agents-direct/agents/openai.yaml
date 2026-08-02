@@ -1,0 +1,4 @@
+interface:
+  display_name: "Registered Agents Direct"
+  short_description: "Run registered agents through the scoped CLI"
+  default_prompt: "Use $agents-direct to inspect and delegate to a registered Hermes agent."

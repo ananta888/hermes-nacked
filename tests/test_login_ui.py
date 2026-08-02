@@ -23,8 +23,13 @@ FAKE_HERMESCTL = """#!/usr/bin/env python3
 import sys
 
 print("ARGS=" + " ".join(sys.argv[1:]), flush=True)
-worker = sys.argv[2] if len(sys.argv) > 2 else "missing"
-action = sys.argv[3] if len(sys.argv) > 3 else "missing"
+scope = sys.argv[1] if len(sys.argv) > 1 else "missing"
+if scope == "agent":
+    action = sys.argv[2] if len(sys.argv) > 2 else "missing"
+    worker = sys.argv[3] if len(sys.argv) > 3 else "missing"
+else:
+    worker = sys.argv[2] if len(sys.argv) > 2 else "missing"
+    action = sys.argv[3] if len(sys.argv) > 3 else "missing"
 if action == "status":
     print(f"STATUS={worker}", flush=True)
 elif action == "login":
@@ -42,6 +47,24 @@ class LoginUiTestBase(unittest.TestCase):
         self.fake_ctl = self.root / "hermesctl"
         self.fake_ctl.write_text(FAKE_HERMESCTL, encoding="utf-8")
         self.fake_ctl.chmod(0o755)
+
+    def add_agent(self, agent_id="builder", engine="codex"):
+        directory = self.root / "runtime" / "control" / "agents" / agent_id
+        directory.mkdir(parents=True)
+        (directory / "agent.json").write_text(
+            json.dumps(
+                {
+                    "agent_id": agent_id,
+                    "engine": engine,
+                    "role": "implementation",
+                    "credential_id": agent_id,
+                    "created_at": "now",
+                    "updated_at": "now",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (directory / "capabilities").write_text("", encoding="utf-8")
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -88,6 +111,25 @@ class LoginSessionTests(LoginUiTestBase):
             self.assertEqual(snapshot["state"], "succeeded")
             self.assertIn("ARGS=worker claude login --claudeai", snapshot["output"])
             self.assertIn("INPUT=browser-return-code", snapshot["output"])
+        finally:
+            manager.shutdown()
+
+    def test_agent_login_uses_registered_engine_and_fixed_broker_command(self):
+        self.add_agent("builder", "codex")
+        self.assertEqual(
+            login_ui.agent_login_arguments(self.root, "builder"),
+            ("codex", ["agent", "login", "builder"]),
+        )
+        manager = login_ui.LoginSessionManager(self.root, self.fake_ctl)
+        try:
+            session = manager.create_agent("builder")
+            self.wait_for_output(session, "https://example.test/builder/login")
+            session.send_input("complete")
+            snapshot = self.wait_for_state(session, {"succeeded", "failed"})
+            self.assertEqual(snapshot["state"], "succeeded")
+            self.assertEqual(snapshot["target_type"], "agent")
+            self.assertEqual(snapshot["target_id"], "builder")
+            self.assertIn("ARGS=agent login builder", snapshot["output"])
         finally:
             manager.shutdown()
 
@@ -205,6 +247,32 @@ class LoginHttpApiTests(LoginUiTestBase):
                 origin=self.server.origin,
             )
         self.assertEqual(caught.exception.code, 400)
+
+    def test_api_lists_and_logs_in_registered_agent_without_secret_metadata(self):
+        self.add_agent("builder", "codex")
+        status, _, body = self.request("/api/v1/agents")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["agents"][0]["agent_id"], "builder")
+        self.assertNotIn("credential_id", payload["agents"][0])
+        self.assertFalse(payload["agents"][0]["credentials_exposed"])
+
+        status, _, body = self.request(
+            "/api/v1/login-sessions",
+            method="POST",
+            payload={"agent": "builder"},
+            origin=self.server.origin,
+        )
+        self.assertEqual(status, 201)
+        session = self.server.manager.get(json.loads(body)["id"])
+        self.wait_for_output(session, "https://example.test/builder/login")
+        session.cancel()
+
+        status, _, body = self.request("/api/v1/control-summary")
+        self.assertEqual(status, 200)
+        summary = json.loads(body)
+        self.assertFalse(summary["credential_contents_exposed"])
+        self.assertNotIn("credential_id", summary["agents"][0])
 
         with self.assertRaises(HTTPError) as caught:
             self.request(

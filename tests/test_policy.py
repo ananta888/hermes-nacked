@@ -25,6 +25,8 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy.direct_workers, ())
         self.assertEqual(policy.mcp_workers, ())
         self.assertEqual(policy.workers, ())
+        self.assertFalse(policy.generic_agents_direct)
+        self.assertFalse(policy.generic_agents_mcp)
 
     def test_independent_capabilities(self):
         policy = parse_capabilities("skills, files")
@@ -126,6 +128,23 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy.direct_workers, ("codex",))
         self.assertEqual(policy.mcp_workers, ("codex", "claude"))
         self.assertEqual(policy.workers, ("codex", "claude"))
+
+    def test_generic_agent_surfaces_have_explicit_dependencies(self):
+        with self.assertRaises(PolicyError):
+            parse_capabilities("agents-direct")
+        with self.assertRaises(PolicyError):
+            parse_capabilities("skills agents-direct")
+        direct = parse_capabilities("skills commandline agents-direct")
+        self.assertTrue(direct.generic_agents_direct)
+        self.assertFalse(direct.generic_agents_mcp)
+        self.assertFalse(direct.enable_mcp)
+
+        with self.assertRaises(PolicyError):
+            parse_capabilities("agents-mcp")
+        mcp = parse_capabilities("skills agents-mcp")
+        self.assertTrue(mcp.generic_agents_mcp)
+        self.assertEqual(mcp.toolsets, ("agents", "skills"))
+        self.assertTrue(mcp.enable_mcp)
 
 
 if __name__ == "__main__":

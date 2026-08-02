@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Hermes Evaluationen</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOKALER OPERATOR</p>
+      <h1>Hermes Evaluationen</h1>
+      <p>Persistente, isolierte Vergleiche von Agenten, Rechten, Kontexten und Skills.</p>
+    </div>
+    <span id="connection" class="badge pending">verbinden…</span>
+  </header>
+  <main>
+    <section class="panel create">
+      <div>
+        <h2>Experiment anlegen</h2>
+        <p>Das Manifest wird validiert; Prompt, Workspace und Kontext werden danach unveränderlich snapshotiert.</p>
+      </div>
+      <form id="create-form">
+        <input id="manifest-path" required placeholder="/absoluter/pfad/evaluation.yaml" autocomplete="off">
+        <button type="submit">Anlegen</button>
+      </form>
+      <p id="message" class="message" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>Experimente</h2>
+          <p id="meta">lade Agenten und Evaluatoren…</p>
+        </div>
+        <button id="refresh" class="secondary">Aktualisieren</button>
+      </div>
+      <div id="experiments" class="cards"></div>
+    </section>
+
+    <section id="detail-panel" class="panel hidden">
+      <div class="section-head">
+        <div>
+          <h2 id="detail-title">Experiment</h2>
+          <p id="detail-state"></p>
+        </div>
+        <div class="actions">
+          <button id="run">Starten</button>
+          <button id="resume" class="secondary">Fortsetzen</button>
+          <button id="cancel" class="danger">Abbrechen</button>
+        </div>
+      </div>
+      <div class="progress"><div id="progress-fill"></div></div>
+      <div id="summary" class="summary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Agent</th><th>Variante</th><th>Status</th><th>Bestanden</th><th>Dauer</th><th>Tokens</th><th>Ergebnis</th></tr></thead>
+          <tbody id="trials"></tbody>
+        </table>
+      </div>
+      <pre id="result" class="result hidden"></pre>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

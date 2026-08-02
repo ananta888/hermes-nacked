@@ -72,14 +72,62 @@ def login_arguments(worker: str) -> list[str]:
     return ["worker", "claude", "login", "--claudeai"]
 
 
+def normalize_agent_id(value: str) -> str:
+    if not isinstance(value, str):
+        raise LoginUiError("agent must be a string")
+    agent_id = value.strip().lower().replace("_", "-")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", agent_id):
+        raise LoginUiError("invalid agent id")
+    return agent_id
+
+
+def agent_record(root: Path, agent_value: str) -> dict[str, Any]:
+    agent_id = normalize_agent_id(agent_value)
+    record_path = root / "runtime" / "control" / "agents" / agent_id / "agent.json"
+    if (record_path.parent / ".operator-only").is_file():
+        raise LoginUiError(f"registered agent not found: {agent_id}")
+    try:
+        if record_path.is_symlink() or not record_path.is_file():
+            raise LoginUiError(f"registered agent not found: {agent_id}")
+        value = json.loads(record_path.read_text(encoding="utf-8"))
+    except LoginUiError:
+        raise
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LoginUiError(f"invalid agent registry record: {agent_id}") from exc
+    engine = normalize_worker(value.get("engine", ""))
+    return {
+        "agent_id": agent_id,
+        "engine": engine,
+        "role": str(value.get("role") or "worker"),
+        "credential_brokered": True,
+        "credentials_exposed": False,
+    }
+
+
+def agent_login_arguments(root: Path, agent_value: str) -> tuple[str, list[str]]:
+    record = agent_record(root, agent_value)
+    return record["engine"], ["agent", "login", record["agent_id"]]
+
+
 def _clean_terminal_text(value: str) -> str:
     return ANSI_ESCAPE.sub("", value).replace("\r\n", "\n").replace("\r", "\n")
 
 
 class LoginSession:
-    def __init__(self, session_id: str, worker: str, command: list[str], cwd: Path):
+    def __init__(
+        self,
+        session_id: str,
+        worker: str,
+        command: list[str],
+        cwd: Path,
+        *,
+        target_type: str = "worker",
+        target_id: str | None = None,
+    ):
         self.session_id = session_id
         self.worker = worker
+        self.target_type = target_type
+        self.target_id = target_id or worker
         self.command = tuple(command)
         self.cwd = cwd
         self.created_at = time.time()
@@ -243,6 +291,8 @@ class LoginSession:
             return {
                 "id": self.session_id,
                 "worker": self.worker,
+                "target_type": self.target_type,
+                "target_id": self.target_id,
                 "state": self.state,
                 "exit_code": self.exit_code,
                 "created_at": self.created_at,
@@ -272,16 +322,41 @@ class LoginSessionManager:
 
     def create(self, worker_value: str) -> LoginSession:
         worker = normalize_worker(worker_value)
+        return self._create("worker", worker, worker, login_arguments(worker))
+
+    def create_agent(self, agent_value: str) -> LoginSession:
+        agent_id = normalize_agent_id(agent_value)
+        engine, arguments = agent_login_arguments(self.root, agent_id)
+        return self._create("agent", agent_id, engine, arguments)
+
+    def _create(
+        self,
+        target_type: str,
+        target_id: str,
+        worker: str,
+        arguments: list[str],
+    ) -> LoginSession:
         with self._lock:
             self._remove_expired()
             if any(
-                session.worker == worker and session.state in {"starting", "running"}
+                session.target_type == target_type
+                and session.target_id == target_id
+                and session.state in {"starting", "running"}
                 for session in self._sessions.values()
             ):
-                raise SessionConflict(f"a {worker} login session is already running")
+                raise SessionConflict(
+                    f"a login session for {target_type} {target_id} is already running"
+                )
             session_id = secrets.token_urlsafe(18)
-            command = [str(self.hermesctl), *login_arguments(worker)]
-            session = LoginSession(session_id, worker, command, self.root)
+            command = [str(self.hermesctl), *arguments]
+            session = LoginSession(
+                session_id,
+                worker,
+                command,
+                self.root,
+                target_type=target_type,
+                target_id=target_id,
+            )
             self._sessions[session_id] = session
         try:
             session.start()
@@ -331,6 +406,131 @@ class LoginSessionManager:
             "exit_code": result.returncode,
             "output": _clean_terminal_text(result.stdout),
             "error": _clean_terminal_text(result.stderr),
+        }
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        control_root = self.root / "runtime" / "control" / "agents"
+        if not control_root.is_dir():
+            return []
+        result = []
+        for directory in sorted(control_root.iterdir()):
+            try:
+                record = agent_record(self.root, directory.name)
+            except LoginUiError:
+                continue
+            result.append(record)
+        return result
+
+    def agent_status(self, agent_value: str) -> dict[str, Any]:
+        record = agent_record(self.root, agent_value)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "COMPOSE_ANSI": "never",
+                "COMPOSE_PROGRESS": "plain",
+                "NO_COLOR": "1",
+                "TERM": "dumb",
+            }
+        )
+        try:
+            result = subprocess.run(
+                [str(self.hermesctl), "agent", "status", record["agent_id"]],
+                cwd=self.root,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, **record, "error": str(exc)}
+        return {
+            "ok": result.returncode == 0,
+            **record,
+            "exit_code": result.returncode,
+            "output": _clean_terminal_text(result.stdout),
+            "error": _clean_terminal_text(result.stderr),
+        }
+
+    def control_summary(self) -> dict[str, Any]:
+        """Return a read-only dashboard view without prompts or credential secrets."""
+        agents = self.list_agents()
+        all_agents: list[dict[str, Any]] = []
+        agent_root = self.root / "runtime" / "control" / "agents"
+        if agent_root.is_dir():
+            for path in sorted(agent_root.glob("*/agent.json")):
+                if (path.parent / ".operator-only").is_file():
+                    continue
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    rights_path = path.parent / "capabilities"
+                    rights = rights_path.read_text(encoding="utf-8").split()
+                    all_agents.append(
+                        {
+                            "agent_id": value["agent_id"],
+                            "engine": value["engine"],
+                            "role": value.get("role", "worker"),
+                            "rights": sorted(rights),
+                            "socket_ready": (
+                                self.root
+                                / "runtime"
+                                / "sockets"
+                                / "agents"
+                                / value["agent_id"]
+                                / "worker.sock"
+                            ).is_socket(),
+                        }
+                    )
+                except (OSError, json.JSONDecodeError, KeyError):
+                    continue
+        teams = []
+        team_root = self.root / "runtime" / "teams"
+        if team_root.is_dir():
+            for path in sorted(team_root.glob("*/team.json")):
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    teams.append(
+                        {
+                            "name": value["name"],
+                            "agents": [item["id"] for item in value["agents"]],
+                            "workflow_steps": len(value.get("workflow", [])),
+                            "applied_at": value.get("applied_at"),
+                        }
+                    )
+                except (OSError, json.JSONDecodeError, KeyError):
+                    continue
+        jobs = []
+        job_root = self.root / "runtime" / "jobs"
+        if job_root.is_dir():
+            for path in sorted(job_root.glob("job-*.json"), reverse=True)[:100]:
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    jobs.append(
+                        {
+                            "job_id": value["job_id"],
+                            "agent_id": value["agent_id"],
+                            "state": value["state"],
+                            "labels": value.get("labels", {}),
+                            "result_artifact": value.get("result_artifact"),
+                            "updated_at": value.get("updated_at"),
+                        }
+                    )
+                except (OSError, json.JSONDecodeError, KeyError):
+                    continue
+        credential_count = len(
+            list((self.root / "runtime" / "control" / "credentials").glob("*.json"))
+        )
+        return {
+            "ok": True,
+            "agents": all_agents,
+            "subscription_login_agents": [item["agent_id"] for item in agents],
+            "teams": teams,
+            "jobs": jobs,
+            "credential_records": credential_count,
+            "credential_contents_exposed": False,
         }
 
     def shutdown(self) -> None:
@@ -464,8 +664,27 @@ class LoginUiHandler(BaseHTTPRequestHandler):
                         "ok": True,
                         "service": "hermes-subscription-login",
                         "workers": list(ALLOWED_WORKERS),
+                        "agents": [item["agent_id"] for item in self.server.manager.list_agents()],
                         "operator_only": True,
                     },
+                )
+                return
+            if parts == ["api", "v1", "agents"]:
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "agents": self.server.manager.list_agents()},
+                )
+                return
+            if parts == ["api", "v1", "control-summary"]:
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.manager.control_summary(),
+                )
+                return
+            if len(parts) == 5 and parts[:3] == ["api", "v1", "agents"] and parts[4] == "status":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.manager.agent_status(parts[3]),
                 )
                 return
             if len(parts) == 5 and parts[:3] == ["api", "v1", "workers"] and parts[4] == "status":
@@ -493,9 +712,12 @@ class LoginUiHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if parts == ["api", "v1", "login-sessions"]:
-                if set(payload) != {"worker"}:
-                    raise LoginUiError("only the worker field is accepted")
-                session = self.server.manager.create(payload["worker"])
+                if set(payload) == {"worker"}:
+                    session = self.server.manager.create(payload["worker"])
+                elif set(payload) == {"agent"}:
+                    session = self.server.manager.create_agent(payload["agent"])
+                else:
+                    raise LoginUiError("accepts exactly one worker or agent field")
                 self._send_json(
                     HTTPStatus.CREATED,
                     {"ok": True, **session.snapshot()},

@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import socket
+import re
 from typing import Any
 
 
 WORKERS = frozenset({"codex", "claude", "opencode"})
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+AGENT_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
 
 def socket_path(worker: str) -> str:
@@ -31,7 +33,45 @@ def call_worker(
 ) -> dict[str, Any]:
     normalized = worker.strip().lower()
     path = socket_path(normalized)
-    if operation not in {"status", "run"}:
+    return _call_socket(
+        path,
+        operation,
+        prompt=prompt,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def agent_socket_path(agent_id: str) -> str:
+    normalized = str(agent_id).strip().lower().replace("_", "-")
+    if not AGENT_ID.fullmatch(normalized):
+        raise ValueError(f"invalid agent id: {agent_id}")
+    root = os.environ.get("HERMES_AGENT_SOCKET_ROOT", "/agent-sockets").rstrip("/")
+    return f"{root}/{normalized}/worker.sock"
+
+
+def call_agent(
+    agent_id: str,
+    operation: str,
+    *,
+    prompt: str | None = None,
+    timeout_seconds: int = 900,
+) -> dict[str, Any]:
+    return _call_socket(
+        agent_socket_path(agent_id),
+        operation,
+        prompt=prompt,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _call_socket(
+    path: str,
+    operation: str,
+    *,
+    prompt: str | None,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    if operation not in {"status", "run", "cancel"}:
         raise ValueError(f"unsupported operation: {operation}")
     if operation == "run" and (not isinstance(prompt, str) or not prompt.strip()):
         raise ValueError("prompt must be a non-empty string")
@@ -40,7 +80,7 @@ def call_worker(
         "operation": operation,
         "timeout_seconds": bounded_timeout,
     }
-    if prompt is not None:
+    if operation == "run" and prompt is not None:
         request["prompt"] = prompt
 
     payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")

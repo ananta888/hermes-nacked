@@ -10,6 +10,7 @@ CAPABILITIES_FILE=${HERMESCTL_CAPABILITIES_FILE:-$ROOT_DIR/.hermes-capabilities}
 POLICY_MODULE_DIR=${HERMESCTL_POLICY_DIR:-$ROOT_DIR/container}
 POLICY_MODULE_NAME=policy
 PROJECT_SKILLS_DIR="$ROOT_DIR/skills"
+CONTROL_CLI="$ROOT_DIR/container/control_cli.py"
 WORKER_CONTROL_DIR=${HERMESCTL_WORKER_CONTROL_DIR:-$RUNTIME_DIR/control/workers}
 CONTROL_ONLY=${HERMESCTL_CONTROL_ONLY:-0}
 WORKER_POLICY_MODULE_NAME=worker_policy
@@ -20,6 +21,7 @@ if [[ "$CONTROL_ONLY" == 1 ]]; then
   POLICY_MODULE_NAME=hermesctl_policy
   WORKER_POLICY_MODULE_NAME=hermes_worker_policy
   WORKER_CONTROL_DIR=${HERMESCTL_WORKER_CONTROL_DIR:-/control/workers}
+  CONTROL_CLI=/usr/local/bin/hermes-control
 fi
 
 export HERMES_HOST_ROOT="$ROOT_DIR"
@@ -34,6 +36,7 @@ SANDBOX_COMPOSE=(-f "$ROOT_DIR/compose.sandbox.yaml")
 CONTROL_COMPOSE=(-f "$ROOT_DIR/compose.control.yaml")
 ORCHESTRATOR_COMPOSE=(-f "$ROOT_DIR/compose.orchestrator.yaml")
 CLAUDE_CONTEXT_COMPOSE=(-f "$ROOT_DIR/compose.claude-context.yaml")
+AGENTS_COMPOSE=(-f "$ROOT_DIR/compose.agents.yaml")
 WORKER_KINDS=(codex claude opencode)
 ALL_WORKER_COMPOSE=()
 for worker_kind in "${WORKER_KINDS[@]}"; do
@@ -75,6 +78,12 @@ Administration (operator actions, never agent tools):
   login-ui [UI args]           Local API/HTML UI for worker subscription login
   skills [Hermes skills args]  Install/list skills as the operator
   worker KIND ACTION [ARGS]    Build/login/configure a coding worker
+  agent ACTION [ARGS]          Manage arbitrary isolated agent instances
+  credential ACTION [ARGS]     Manage brokered per-instance CLI credentials
+  team ACTION [ARGS]           Apply/run declarative multi-agent teams
+  job ACTION [ARGS]            Submit/status/cancel persistent agent jobs
+  artifact ACTION [ARGS]       Exchange immutable team handoff artifacts
+  benchmark ACTION [ARGS]      Plan/run/export isolated agent evaluations
   verify                       Run tests, build, and print policy evidence
 
 Worker actions:
@@ -92,6 +101,36 @@ Worker actions:
   run "prompt"                Operator test request through its Unix socket
 
 Worker kinds: codex, claude, opencode
+
+Generic agent quick start:
+  agent create ID --engine KIND [--credential CREDENTIAL] [--role ROLE]
+  agent grant ID inspect edit commandline network skills agents-md claude-md
+  agent build|login|start|status|run|stop ID
+  agent delete ID --yes [--delete-credential]
+  agent model ID [MODEL|none]
+  agent clone ID SOURCE [--branch BRANCH]
+  agent patch ID ARTIFACT
+
+Team quick start:
+  team example                 Print a version-1 declarative manifest
+  team apply team.yaml --explain
+  team apply team.yaml
+  team status|run|reset NAME
+
+Benchmark quick start:
+  benchmark example            Print a version-1 evaluation manifest
+  benchmark plan FILE          Validate targets, variants, and rights
+  benchmark create FILE        Snapshot inputs and create an experiment
+  benchmark run ID [--wait]    Start or synchronously run the experiment
+  benchmark status|cancel ID   Inspect or cancel persistent execution
+  benchmark resume ID          Recover and continue interrupted execution
+  benchmark export ID FILE     Export results including normalized outputs
+  benchmark serve              Open the token-protected local dashboard
+
+Granular agent rights:
+  inspect, edit, commandline, network, skills, agents-md, claude-md
+  edit requires inspect; commandline requires inspect + network.
+  [special] Codex requires inspect+edit+commandline+network as one bundle.
 
 Worker features (separate policy per worker):
   tools          built-in file/search tools; Codex maps this to read-only shell
@@ -120,6 +159,10 @@ Capabilities:
   codex-mcp | claude-mcp | opencode-mcp
                  two scoped MCP tools for exactly one isolated worker
                  (each requires skills)
+  agents-direct  generic list/status/run for registered agent instances
+                 (requires skills + commandline)
+  agents-mcp     generic agents/jobs/artifacts/teams MCP surface
+                 (requires skills; credentials and login never exposed)
 
 Aliases: tools=file(s), shell/terminal=commandline, agents-md=orchestrator
 EOF
@@ -138,9 +181,41 @@ ensure_layout() {
       [[ -f "$WORKER_CONTROL_DIR/$controlled_worker/capabilities" ]] || \
         die "worker control file is not mounted: $controlled_worker"
     done
+    [[ -d "$ROOT_DIR/runtime/control/agents" ]] || \
+      die 'redacted agent control registry is not mounted'
+    [[ -d "$ROOT_DIR/runtime/registry/agents" ]] || \
+      die 'redacted agent policy registry is not mounted'
     return
   fi
   mkdir -p "$STATE_DIR" "$WORKSPACE_DIR" "$STATE_DIR/skills"
+  mkdir -p \
+    "$RUNTIME_DIR/control/agents" \
+    "$RUNTIME_DIR/control/credentials" \
+    "$RUNTIME_DIR/registry/agents" \
+    "$RUNTIME_DIR/agents" \
+    "$RUNTIME_DIR/credentials" \
+    "$RUNTIME_DIR/sockets/agents" \
+    "$RUNTIME_DIR/jobs" \
+    "$RUNTIME_DIR/artifacts" \
+    "$RUNTIME_DIR/teams" \
+    "$RUNTIME_DIR/runs" \
+    "$RUNTIME_DIR/evaluations" \
+    "$RUNTIME_DIR/locks"
+  chmod 700 \
+    "$RUNTIME_DIR/control/agents" \
+    "$RUNTIME_DIR/control/credentials" \
+    "$RUNTIME_DIR/registry" \
+    "$RUNTIME_DIR/registry/agents" \
+    "$RUNTIME_DIR/agents" \
+    "$RUNTIME_DIR/credentials" \
+    "$RUNTIME_DIR/sockets" \
+    "$RUNTIME_DIR/sockets/agents" \
+    "$RUNTIME_DIR/jobs" \
+    "$RUNTIME_DIR/artifacts" \
+    "$RUNTIME_DIR/teams" \
+    "$RUNTIME_DIR/runs" \
+    "$RUNTIME_DIR/evaluations" \
+    "$RUNTIME_DIR/locks"
   local worker
   for worker in "${WORKER_KINDS[@]}"; do
     mkdir -p \
@@ -387,6 +462,8 @@ print(json.dumps({
     "direct_workers": policy.direct_workers,
     "mcp_workers": policy.mcp_workers,
     "workers": policy.workers,
+    "generic_agents_direct": policy.generic_agents_direct,
+    "generic_agents_mcp": policy.generic_agents_mcp,
 }))
 PY
 }
@@ -491,6 +568,10 @@ compose_for_policy() {
   fi
   if [[ $(policy_field load_claude_context "$json") == true ]]; then
     printf '%s\0' "${CLAUDE_CONTEXT_COMPOSE[@]}"
+  fi
+  if [[ $(policy_field generic_agents_direct "$json") == true ]] || \
+     [[ $(policy_field generic_agents_mcp "$json") == true ]]; then
+    printf '%s\0' "${AGENTS_COMPOSE[@]}"
   fi
   local workers worker
   workers=$(policy_field workers "$json")
@@ -923,6 +1004,8 @@ show_status() {
   printf 'Hermesctl direct:  %s\n' "$(policy_field direct_control "$json")"
   printf 'Worker direct:     %s\n' "$(policy_field direct_workers "$json" | sed 's/^$/none/')"
   printf 'Worker MCP:        %s\n' "$(policy_field mcp_workers "$json" | sed 's/^$/none/')"
+  printf 'Agents direct:     %s\n' "$(policy_field generic_agents_direct "$json")"
+  printf 'Agents MCP:        %s\n' "$(policy_field generic_agents_mcp "$json")"
   printf 'Command sandbox:  %s\n' "$(policy_field needs_sandbox "$json")"
   printf 'Sandbox network:  %s\n' "$(policy_field sandbox_network "$json")"
   printf 'Workspace:         %s\n' "$WORKSPACE_DIR"
@@ -935,7 +1018,7 @@ fi
 
 if [[ "$CONTROL_ONLY" == 1 ]]; then
   case "$command" in
-    access|enable|disable|reset|status|capabilities|worker|help|-h|--help) ;;
+    access|enable|disable|reset|status|capabilities|worker|agent|help|-h|--help) ;;
     *) die "command is unavailable through model-facing hermesctl: $command" ;;
   esac
 fi
@@ -1010,6 +1093,23 @@ EOF
     ensure_layout
     worker_command "$@"
     ;;
+  agent)
+    ensure_layout
+    if [[ "$CONTROL_ONLY" == 1 ]]; then
+      case "${1:-}" in
+        list|rights|explain|grant|revoke|reset) ;;
+        *) die "agent action is unavailable through model-facing hermesctl: ${1:-missing}" ;;
+      esac
+    fi
+    [[ -f "$CONTROL_CLI" ]] || die 'control-plane CLI is unavailable'
+    python3 "$CONTROL_CLI" --root "$ROOT_DIR" "$command" "$@"
+    ;;
+  credential|team|job|artifact|benchmark)
+    ensure_layout
+    [[ "$CONTROL_ONLY" == 0 ]] || die "$command is unavailable through model-facing hermesctl"
+    [[ -f "$CONTROL_CLI" ]] || die 'control-plane CLI is unavailable'
+    python3 "$CONTROL_CLI" --root "$ROOT_DIR" "$command" "$@"
+    ;;
   access)
     ensure_layout
     access_command "$@"
@@ -1026,6 +1126,19 @@ EOF
     "${BASE_COMPOSE[@]}" "${ORCHESTRATOR_COMPOSE[@]}" \
       "${CLAUDE_CONTEXT_COMPOSE[@]}" config --quiet
     "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" config --quiet
+    env \
+      AGENT_ID=verify-agent \
+      AGENT_ENGINE=claude \
+      AGENT_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.220}" \
+      AGENT_STATE="$RUNTIME_DIR/agents/verify-agent/state" \
+      AGENT_WORKSPACE="$RUNTIME_DIR/agents/verify-agent/workspace" \
+      AGENT_CONTEXT="$ROOT_DIR/worker-context/claude" \
+      AGENT_SOCKET="$RUNTIME_DIR/sockets/agents/verify-agent" \
+      AGENT_CONTROL="$RUNTIME_DIR/control/agents/verify-agent" \
+      AGENT_CREDENTIAL_HOME="$RUNTIME_DIR/credentials/verify-agent/home" \
+      docker compose --project-directory "$ROOT_DIR" \
+      -f "$ROOT_DIR/compose.agent.yaml" config --quiet
+    "${BASE_COMPOSE[@]}" "${AGENTS_COMPOSE[@]}" config --quiet
     "${BASE_COMPOSE[@]}" build hermes
     "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" build \
       worker-codex worker-claude worker-opencode
@@ -1060,6 +1173,17 @@ EOF
     HERMES_CAPABILITIES='skills,codex-mcp,claude-mcp,opencode-mcp' \
       "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" run --rm \
       -e HERMES_CAPABILITIES=skills,codex-mcp,claude-mcp,opencode-mcp \
+      hermes hermes-naked --mcp-probe
+    printf '\nGeneric registered-agent direct probe (temporary policy):\n'
+    HERMES_CAPABILITIES='commandline,skills,agents-direct' \
+      "${BASE_COMPOSE[@]}" "${SANDBOX_COMPOSE[@]}" \
+      "${AGENTS_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=commandline,skills,agents-direct \
+      hermes hermes-naked --sandbox-probe
+    printf '\nGeneric agents/jobs/artifacts/teams MCP probe (temporary policy):\n'
+    HERMES_CAPABILITIES='skills,agents-mcp' \
+      "${BASE_COMPOSE[@]}" "${AGENTS_COMPOSE[@]}" run --rm \
+      -e HERMES_CAPABILITIES=skills,agents-mcp \
       hermes hermes-naked --mcp-probe
     printf '\nAGENTS.md orchestrator probe (temporary policy):\n'
     HERMES_CAPABILITIES='orchestrator' \

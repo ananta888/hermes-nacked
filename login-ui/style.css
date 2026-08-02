@@ -71,6 +71,21 @@ footer {
   line-height: 1.65;
 }
 
+.section-heading {
+  margin: 2rem 0 1rem;
+  max-width: 760px;
+}
+
+.compact-lead {
+  margin-bottom: 0;
+}
+
+.placeholder-card {
+  min-height: 8rem;
+  color: var(--muted);
+  justify-content: center;
+}
+
 code {
   color: #bcf5e1;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -24,7 +25,8 @@ mcp = FastMCP(
     instructions=(
         "Manage only the Hermes capability policy and the separate feature "
         "policies of its three isolated coding workers. Hermes policy changes "
-        "affect new sessions; worker policy changes affect the next worker task."
+        "and rights of redacted registered agents. Hermes policy changes affect "
+        "new sessions; worker/agent policy changes affect the next task."
     ),
 )
 
@@ -124,6 +126,26 @@ def _normalize_access_features(features: list[str]) -> list[str]:
         if not isinstance(feature, str) or not feature.strip():
             raise ValueError("each access feature must be a non-empty string")
         result.append(feature.strip())
+    return result
+
+
+def _normalize_agent(agent_id: str) -> str:
+    if not isinstance(agent_id, str):
+        raise ValueError("agent_id must be a string")
+    normalized = agent_id.strip().lower().replace("_", "-")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", normalized):
+        raise ValueError("invalid agent_id")
+    return normalized
+
+
+def _normalize_agent_rights(rights: list[str]) -> list[str]:
+    if not isinstance(rights, list) or not rights:
+        raise ValueError("rights must be a non-empty list")
+    result: list[str] = []
+    for right in rights:
+        if not isinstance(right, str) or not right.strip():
+            raise ValueError("each agent right must be a non-empty string")
+        result.append(right.strip())
     return result
 
 
@@ -229,6 +251,46 @@ def worker_disable(worker: str, features: list[str]) -> dict[str, Any]:
 def worker_reset(worker: str) -> dict[str, Any]:
     """Return exactly one coding worker to model-only operation."""
     return _run("worker", _normalize_worker(worker), "reset")
+
+
+@mcp.tool()
+def agent_list() -> dict[str, Any]:
+    """List registered agent ids, engines, roles, and redacted effective rights."""
+    return _run("agent", "list")
+
+
+@mcp.tool()
+def agent_rights(agent_id: str) -> dict[str, Any]:
+    """Show one registered agent's granular rights and engine-specific mapping."""
+    return _run("agent", "rights", _normalize_agent(agent_id))
+
+
+@mcp.tool()
+def agent_explain(agent_id: str) -> dict[str, Any]:
+    """Explain native or special right mappings for one registered agent."""
+    return _run("agent", "explain", _normalize_agent(agent_id))
+
+
+@mcp.tool()
+def agent_grant(agent_id: str, rights: list[str]) -> dict[str, Any]:
+    """Grant explicitly requested granular rights to one agent's next task."""
+    return _run(
+        "agent", "grant", _normalize_agent(agent_id), *_normalize_agent_rights(rights)
+    )
+
+
+@mcp.tool()
+def agent_revoke(agent_id: str, rights: list[str]) -> dict[str, Any]:
+    """Revoke explicitly requested granular rights from one agent's next task."""
+    return _run(
+        "agent", "revoke", _normalize_agent(agent_id), *_normalize_agent_rights(rights)
+    )
+
+
+@mcp.tool()
+def agent_reset(agent_id: str) -> dict[str, Any]:
+    """Return one registered agent to model-only operation."""
+    return _run("agent", "reset", _normalize_agent(agent_id))
 
 
 if __name__ == "__main__":

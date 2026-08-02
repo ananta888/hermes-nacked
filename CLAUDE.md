@@ -14,9 +14,23 @@ direkte Befehle nur über den passenden Skill.
 Verwende nach außen die gemeinsame Oberfläche `hermesctl access <target>` mit
 `tool-use`, `commandline`, `skills`, `agents-md` und `claude-md`. Prüfe bei
 Codex immer `access codex explain`: Sein `tool-use` ist `[special]`, weil es
-das Shell-Tool read-only verwendet. Weise auf model-only, inspection-only oder
-Claude/OpenCode als Alternativen hin. Worker-Skills sind kontrolliert
+sein inneres read-only-`bubblewrap` im gehärteten Worker nicht initialisieren
+kann. Legacy-Shellzugriff braucht deshalb `commandline`; generische Codex-
+Instanzen verlangen `inspect+edit+commandline+network` gemeinsam und nutzen
+die äußere Docker-Isolation. Weise auf model-only oder Claude/OpenCode als
+Alternativen hin. Worker-Skills sind kontrolliert
 injizierte SKILL.md-Inhalte, keine dynamische native Skill-Freigabe.
+
+Generische Agent-Instanzen besitzen getrennte Rolle, Rechte, State, Workspace,
+Kontext, Socket, Container und Broker-Credentials. Verwende `agents-mcp` oder
+`agents-direct` nur mit dem passenden Skill. Teams übergeben Ergebnisse als
+prüfsummengeschützte Artefakte und teilen nicht stillschweigend einen
+beschreibbaren Workspace. Credential-Broker, Team-Anwendung, Login und
+Containerverwaltung bleiben Operator-Aktionen.
+
+Generische Evaluationen laufen ausschließlich über die Operatoroberfläche
+`./hermesctl benchmark ...`. Sie verwenden kurzlebige Agenten und immutable
+Context-/Workspace-Snapshots; diese Administration ist kein Hermes-Tool.
 
 Worker-Aboanmeldungen über `./hermesctl login-ui` bleiben reine
 Operator-Aktionen. Fordere niemals Login-Codes an und versuche nicht, die

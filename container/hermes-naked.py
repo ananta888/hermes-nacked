@@ -38,6 +38,12 @@ HERMESCTL_MCP_TOOLS = {
     "mcp__hermesctl__worker_enable",
     "mcp__hermesctl__worker_disable",
     "mcp__hermesctl__worker_reset",
+    "mcp__hermesctl__agent_list",
+    "mcp__hermesctl__agent_rights",
+    "mcp__hermesctl__agent_explain",
+    "mcp__hermesctl__agent_grant",
+    "mcp__hermesctl__agent_revoke",
+    "mcp__hermesctl__agent_reset",
 }
 WORKER_MCP_TOOLS = {
     worker: {
@@ -45,6 +51,17 @@ WORKER_MCP_TOOLS = {
         f"mcp__{worker}_worker__run",
     }
     for worker in ("codex", "claude", "opencode")
+}
+AGENT_MCP_TOOLS = {
+    "mcp__agents__list",
+    "mcp__agents__status",
+    "mcp__agents__run",
+    "mcp__agents__job_submit",
+    "mcp__agents__job_status",
+    "mcp__agents__job_cancel",
+    "mcp__agents__artifact_get",
+    "mcp__agents__team_list",
+    "mcp__agents__team_status",
 }
 
 
@@ -154,6 +171,26 @@ def _apply_terminal_policy_env(policy) -> None:
                 f"{host_root}/runtime/control/workers:"
                 "/control/workers:rw"
             ),
+            (
+                f"{host_root}/runtime/registry/agents:"
+                "/control/runtime/control/agents:rw"
+            ),
+            (
+                f"{host_root}/runtime/registry/agents:"
+                "/control/runtime/registry/agents:rw"
+            ),
+            (
+                f"{host_root}/container/control_cli.py:"
+                "/usr/local/bin/hermes-control:ro"
+            ),
+            (
+                f"{host_root}/container/control_plane:"
+                "/usr/local/lib/control_plane:ro"
+            ),
+            (
+                f"{host_root}/container/worker_rpc.py:"
+                "/usr/local/lib/worker_rpc.py:ro"
+            ),
         ]
         sandbox_env.update(
             {
@@ -186,6 +223,25 @@ def _apply_terminal_policy_env(policy) -> None:
                 f"{host_root}/runtime/workers/{worker}/socket:"
                 f"/worker-sockets/{worker}:ro"
             )
+
+    if policy.generic_agents_direct:
+        host_root = os.environ.get("HERMES_HOST_ROOT", "").strip()
+        if not host_root:
+            _fail("HERMES_HOST_ROOT is required for agents-direct")
+        volumes.extend(
+            [
+                f"{host_root}/container/agentctl.py:/usr/local/bin/registered-agent:ro",
+                f"{host_root}/container/worker_rpc.py:/usr/local/lib/worker_rpc.py:ro",
+                f"{host_root}/runtime/registry/agents:/agent-control:ro",
+                f"{host_root}/runtime/sockets/agents:/agent-sockets:ro",
+            ]
+        )
+        sandbox_env.update(
+            {
+                "HERMES_AGENT_CONTROL_ROOT": "/agent-control",
+                "HERMES_AGENT_SOCKET_ROOT": "/agent-sockets",
+            }
+        )
 
     os.environ["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
     os.environ["TERMINAL_DOCKER_ENV"] = json.dumps(sandbox_env)
@@ -237,6 +293,12 @@ def _install_extension_policy(policy) -> None:
                     "worker_enable",
                     "worker_disable",
                     "worker_reset",
+                    "agent_list",
+                    "agent_rights",
+                    "agent_explain",
+                    "agent_grant",
+                    "agent_revoke",
+                    "agent_reset",
                 ],
                 "resources": False,
                 "prompts": False,
@@ -250,6 +312,32 @@ def _install_extension_policy(policy) -> None:
             "connect_timeout": 15,
             "tools": {
                 "include": ["status", "run"],
+                "resources": False,
+                "prompts": False,
+            },
+        }
+    if policy.generic_agents_mcp:
+        exact_servers["agents"] = {
+            "command": "/usr/local/bin/agent-mcp",
+            "args": [],
+            "timeout": 1815,
+            "connect_timeout": 15,
+            "env": {
+                "HERMES_AGENT_RUNTIME_ROOT": "/agent-runtime",
+                "HERMES_AGENT_SOCKET_ROOT": "/agent-sockets",
+            },
+            "tools": {
+                "include": [
+                    "list",
+                    "status",
+                    "run",
+                    "job_submit",
+                    "job_status",
+                    "job_cancel",
+                    "artifact_get",
+                    "team_list",
+                    "team_status",
+                ],
                 "resources": False,
                 "prompts": False,
             },
@@ -289,6 +377,8 @@ def _install_tool_policy(toolsets: tuple[str, ...]) -> tuple[str, ...]:
     for worker, tools in WORKER_MCP_TOOLS.items():
         if f"{worker}_worker" in effective:
             allowed_names.update(tools)
+    if "agents" in effective:
+        allowed_names.update(AGENT_MCP_TOOLS)
 
     import model_tools
 
@@ -372,6 +462,8 @@ def _probe_sandbox(policy) -> None:
             "grep -q '^Access target:     hermes' /tmp/access-hermes; "
             "hermesctl access codex explain >/tmp/access-codex; "
             "grep -q '^\\[special\\].*tool-use' /tmp/access-codex; "
+            "hermesctl agent list >/tmp/agent-list; "
+            "grep -q '^\\[' /tmp/agent-list; "
             "printf 'hermesctl=mounted\\n'; "
             if policy.direct_control
             else "test ! -e /control/.hermes-capabilities; printf 'hermesctl=absent\\n'; "
@@ -393,6 +485,20 @@ def _probe_sandbox(policy) -> None:
             worker_checks = (
                 "test ! -e /usr/local/bin/agent-worker; printf 'workers=absent\\n'; "
             )
+        agent_checks = ""
+        if policy.generic_agents_direct:
+            agent_checks = (
+                "test -x /usr/local/bin/registered-agent; "
+                "registered-agent list >/tmp/registered-agents; "
+                "grep -q '\"ok\": true' /tmp/registered-agents; "
+                "if touch /agent-control/.write-test 2>/dev/null; then exit 1; fi; "
+                "if touch /agent-sockets/.write-test 2>/dev/null; then exit 1; fi; "
+                "printf 'agents=mounted\\n'; "
+            )
+        else:
+            agent_checks = (
+                "test ! -e /usr/local/bin/registered-agent; printf 'agents=absent\\n'; "
+            )
 
         result = environment.execute(
             "set -eu; test -d /workspace; "
@@ -402,6 +508,7 @@ def _probe_sandbox(policy) -> None:
             "else printf 'skills=absent\\n'; fi; "
             + control_check
             + worker_checks
+            + agent_checks
         )
         network_mode = environment._container_network_mode(environment._container_id or "")
         expected_network = "bridge" if policy.sandbox_network else "none"
@@ -429,6 +536,7 @@ def _probe_sandbox(policy) -> None:
                     "skills_mounted": policy.mount_skills,
                     "hermesctl_mounted": policy.direct_control,
                     "direct_workers": policy.direct_workers,
+                    "generic_agents_direct": policy.generic_agents_direct,
                     "worker_socket_mounts_read_only": bool(policy.direct_workers),
                     "workspace_mounted": True,
                     "run_as_uid": os.getuid(),
@@ -453,6 +561,8 @@ def _probe_mcp(policy) -> None:
         expected.update(HERMESCTL_MCP_TOOLS)
     for worker in policy.mcp_workers:
         expected.update(WORKER_MCP_TOOLS[worker])
+    if policy.generic_agents_mcp:
+        expected.update(AGENT_MCP_TOOLS)
     try:
         discovered = set(discover_mcp_tools())
         schemas = model_tools.get_tool_definitions(
@@ -491,6 +601,7 @@ def _probe_mcp(policy) -> None:
                 ("mcp__hermesctl__access_status", {"target": target})
                 for target in ("hermes", "codex", "claude", "opencode")
             )
+            status_tools.append(("mcp__hermesctl__agent_list", {}))
             status_tools.append(
                 ("mcp__hermesctl__access_explain", {"target": "codex"})
             )
@@ -502,6 +613,13 @@ def _probe_mcp(policy) -> None:
             (f"mcp__{worker}_worker__status", {})
             for worker in policy.mcp_workers
         )
+        if policy.generic_agents_mcp:
+            status_tools.extend(
+                [
+                    ("mcp__agents__list", {}),
+                    ("mcp__agents__team_list", {}),
+                ]
+            )
         for tool_name, arguments in status_tools:
             status_result = model_tools.handle_function_call(
                 tool_name,
@@ -600,6 +718,8 @@ def main() -> None:
                     "direct_workers": policy.direct_workers,
                     "mcp_workers": policy.mcp_workers,
                     "workers": policy.workers,
+                    "generic_agents_direct": policy.generic_agents_direct,
+                    "generic_agents_mcp": policy.generic_agents_mcp,
                     "credential_mounts": False,
                     "cache_mounts": False,
                     "sandbox_required": policy.needs_sandbox,

@@ -9,6 +9,9 @@ const sendInput = document.querySelector("#send-input");
 const inputForm = document.querySelector("#terminal-input-form");
 const openLink = document.querySelector("#open-link");
 const cancelSession = document.querySelector("#cancel-session");
+const agentCards = document.querySelector("#agent-cards");
+const dashboardOutput = document.querySelector("#dashboard-output");
+const refreshDashboard = document.querySelector("#refresh-dashboard");
 
 let bearerToken = "";
 let activeSessionId = "";
@@ -50,7 +53,7 @@ function setSessionControls(running) {
   terminalInput.disabled = !running;
   sendInput.disabled = !running;
   cancelSession.disabled = !running;
-  document.querySelectorAll("[data-login-worker]").forEach((button) => {
+  document.querySelectorAll("[data-login-worker], [data-login-agent]").forEach((button) => {
     button.disabled = running;
   });
 }
@@ -106,19 +109,19 @@ async function pollSession() {
   }
 }
 
-async function startLogin(worker) {
+async function startLogin(targetType, targetId) {
   if (pollTimer) window.clearTimeout(pollTimer);
   activeSessionId = "";
   outputOffset = 0;
   latestLoginUrl = "";
   openLink.disabled = true;
   terminalOutput.textContent = "";
-  sessionState.textContent = `${worker}: Login wird gestartet …`;
+  sessionState.textContent = `${targetType} ${targetId}: Login wird gestartet …`;
   setSessionControls(true);
   try {
     const payload = await api("/api/v1/login-sessions", {
       method: "POST",
-      body: JSON.stringify({worker}),
+      body: JSON.stringify({[targetType]: targetId}),
     });
     activeSessionId = payload.id;
     appendOutput(payload.output, true);
@@ -140,8 +143,66 @@ async function checkStatus(worker) {
   }
 }
 
+async function checkAgentStatus(agentId) {
+  statusOutput.textContent = `${agentId}: Status wird geprüft …`;
+  try {
+    const payload = await api(`/api/v1/agents/${encodeURIComponent(agentId)}/status`);
+    statusOutput.textContent = [payload.output, payload.error].filter(Boolean).join("\n");
+  } catch (error) {
+    statusOutput.textContent = `Statusfehler: ${error.message}`;
+  }
+}
+
+async function loadDashboard() {
+  dashboardOutput.textContent = "Control Plane wird gelesen …";
+  try {
+    const payload = await api("/api/v1/control-summary");
+    dashboardOutput.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    dashboardOutput.textContent = `Dashboardfehler: ${error.message}`;
+  }
+}
+
+function renderAgents(agents) {
+  agentCards.textContent = "";
+  if (!agents.length) {
+    const placeholder = document.createElement("article");
+    placeholder.className = "worker-card placeholder-card";
+    placeholder.textContent = "Keine Codex-/Claude-Agenten registriert.";
+    agentCards.append(placeholder);
+    return;
+  }
+  for (const agent of agents) {
+    const card = document.createElement("article");
+    card.className = "worker-card";
+    const content = document.createElement("div");
+    const tag = document.createElement("p");
+    tag.className = "tag";
+    tag.textContent = `${agent.engine} · isoliertes Credential`;
+    const heading = document.createElement("h2");
+    heading.textContent = agent.agent_id;
+    const role = document.createElement("p");
+    role.textContent = agent.role;
+    content.append(tag, heading, role);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const status = document.createElement("button");
+    status.className = "secondary";
+    status.textContent = "Status prüfen";
+    status.dataset.statusAgent = agent.agent_id;
+    status.addEventListener("click", () => checkAgentStatus(agent.agent_id));
+    const login = document.createElement("button");
+    login.textContent = `${agent.agent_id} anmelden`;
+    login.dataset.loginAgent = agent.agent_id;
+    login.addEventListener("click", () => startLogin("agent", agent.agent_id));
+    actions.append(status, login);
+    card.append(content, actions);
+    agentCards.append(card);
+  }
+}
+
 document.querySelectorAll("[data-login-worker]").forEach((button) => {
-  button.addEventListener("click", () => startLogin(button.dataset.loginWorker));
+  button.addEventListener("click", () => startLogin("worker", button.dataset.loginWorker));
 });
 
 document.querySelectorAll("[data-status-worker]").forEach((button) => {
@@ -182,6 +243,8 @@ cancelSession.addEventListener("click", async () => {
   }
 });
 
+refreshDashboard.addEventListener("click", loadDashboard);
+
 async function initialize() {
   readToken();
   if (!bearerToken) {
@@ -193,7 +256,12 @@ async function initialize() {
   }
   try {
     const health = await api("/api/v1/health");
-    setConnection(`Lokale API verbunden · Ziele: ${health.workers.join(", ")}`);
+    const agents = await api("/api/v1/agents");
+    renderAgents(agents.agents);
+    await loadDashboard();
+    setConnection(
+      `Lokale API verbunden · Worker: ${health.workers.join(", ")} · Agenten: ${health.agents.length}`,
+    );
   } catch (error) {
     setConnection(`API-Verbindung fehlgeschlagen: ${error.message}`, "error");
   }

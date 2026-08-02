@@ -3,6 +3,7 @@ FROM ${WORKER_NODE_IMAGE}
 
 ARG WORKER_KIND
 ARG WORKER_CLI_VERSION
+ENV WORKER_CLI_VERSION=${WORKER_CLI_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

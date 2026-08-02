@@ -37,11 +37,12 @@ Do not invoke both paths for the same task.
   change and its risk. Change it only after an explicit user request through
   the hermesctl MCP/direct skill; otherwise give the operator command
   `./hermesctl access codex enable <feature>`.
-- Codex has no separate native file-tool surface. Here `tools` enables its
-  shell tool under a read-only sandbox; `commandline` additionally permits the
-  workspace-write sandbox and requires `tools`. In the generic access command,
-  this first level is named `tool-use` and is marked `[special]`; point out
-  `./hermesctl access codex explain` and its alternatives.
+- Codex has no separate native file-tool surface. Its inner bubblewrap cannot
+  initialize inside the hardened worker. The shell therefore remains disabled
+  for legacy `tools` alone and is enabled only with `tools+commandline`, using
+  the outer Docker container as the isolation boundary. Generic Codex
+  instances require inspect+edit+commandline+network together. Mark this
+  `[special]` and recommend Claude/OpenCode for native separation.
 - Tell the user that changes occur under
   `runtime/workers/codex/workspace`, not in the Hermes workspace.
 - Include the goal, relevant constraints, expected verification, and desired

@@ -5,11 +5,13 @@
 ```text
 Benutzer
   ├─ lokale Login-UI/API (127.0.0.1, zufälliger Bearer-Token)
-  │    └─ festes Codex- oder Claude-CLI-Login im jeweiligen Worker-State
+  │    ├─ festes Codex- oder Claude-CLI-Login im jeweiligen Worker-State
+  │    └─ festes Login einer registrierten Instanz in genau deren Broker-Home
   └─ Hermes-Controller (Docker, Providerzugang, kein Host-Projekt)
        ├─ optional: read-only AGENTS.md und/oder CLAUDE.md
        ├─ optional: lokaler hermesctl-MCP (nur Hermes-/Worker-Policy)
        ├─ optional: eng begrenzte Worker-MCPs (je nur status/run)
+       ├─ optional: generischer Agent-MCP (Agenten/Jobs/Artefakte/Teams)
        ├─ optional: read-only Unix-Socket des freigegebenen Workers
        ├─ Modell-API (nur für Inferenz)
        └─ optional: Docker-Socket
@@ -19,9 +21,22 @@ Benutzer
   ├─ Claude-Worker (eigener State, Workspace, Socket und Egress)
   └─ OpenCode-Worker (eigener State, Workspace, Socket und Egress)
 
+  ├─ registrierter Agent A (eigener State, Workspace, Kontext, Socket, Container)
+  │    └─ Credential-Broker mountet nur CLI-Home A
+  └─ registrierter Agent B (vollständig getrennte Instanz)
+       └─ Credential-Broker mountet nur CLI-Home B
+
 Operator-/Hermes-Control
   └─ runtime/control/workers/<worker>/capabilities (read/write)
        └─ jeweiliger Worker (nur eigenes Profil, read-only)
+
+Operator-Control-Plane
+  ├─ runtime/control/agents/<id> (privat, enthält Broker-Zuordnung)
+  ├─ runtime/registry/agents/<id> (read-only, credential_id=redacted)
+  ├─ runtime/credentials/<credential>/home (nur zugewiesener Agent)
+  ├─ runtime/jobs und runtime/artifacts (atomare Team-Handoffs)
+  ├─ runtime/evaluations (persistente Pläne, Trials und Messwerte)
+  └─ runtime/teams (angewendete deklarative Definitionen)
 ```
 
 Im Nullzustand wird der Docker-Socket nicht gemountet. Er kommt erst hinzu,
@@ -39,6 +54,10 @@ den zweiten Sandbox-Container zu verwalten.
 - Login-Sitzungen laufen in einem PTY mit begrenztem Ausgabepuffer und
   begrenzter Eingabe. Je Worker darf nur eine Sitzung laufen; Serverende
   signalisiert allen laufenden Login-Prozessgruppen den Abbruch.
+- Registrierte Agenten werden in der Login-API nur mit ID, Engine und Rolle
+  angezeigt. Der feste Login-Prozess wird über `hermesctl agent login <id>`
+  gestartet; die UI liest weder Broker-Metadaten mit Credential-ID noch
+  Secret-Dateien.
 - Die gemeinsame `access`-Oberfläche akzeptiert nur die vier Ziele `hermes`,
   `codex`, `claude`, `opencode` und die fünf Features `tool-use`,
   `commandline`, `skills`, `agents-md`, `claude-md`. Sie schreibt weiterhin
@@ -61,9 +80,20 @@ den zweiten Sandbox-Container zu verwalten.
   Policy-Module, die Hermes-Capability-Datei und die Worker-Profile in die
   netzlose Command-Sandbox. Docker-Administration und die Projektwurzel werden
   nicht sichtbar.
+  Für registrierte Agenten wird nur die redigierte Registry doppelt als
+  Policy-Repository gemountet; private Broker-Zuordnungen und Credential-Homes
+  bleiben unsichtbar. Zulässig sind nur list/rights/explain/grant/revoke/reset.
 - Jeder Coding-Worker hat einen eigenen Container, persistenten State,
   Workspace, Unix-Socket und Docker-Bridge. Es gibt keine TCP-Ports, keinen
   Docker-Socket und keine State-/Workspace-Mounts zwischen den Workern.
+- Jede generische Agent-Instanz besitzt dieselben Isolationsobjekte separat.
+  Die private Registry enthält ihre Credential-Zuordnung; die an Direct/MCP
+  weitergegebene Registry ist redigiert und read-only. Credential-Homes liegen
+  außerhalb von State, Workspace, Context, Sockets, Jobs und Artefakten.
+- Generische Rechte sind `inspect`, `edit`, `commandline`, `network`, `skills`,
+  `agents-md`, `claude-md`. `edit` benötigt `inspect`; `commandline` benötigt
+  `inspect+network`. Bei Codex ist aus technischen Gründen das gesamte Bündel
+  `inspect+edit+commandline+network` erforderlich.
 - Jeder Worker beginnt model-only und liest vor jedem Auftrag ein eigenes
   Profil mit `tools`, `commandline`, `skills`, `agents-md` und `claude-md`.
   Die Profildatei liegt außerhalb seines States und ist in diesem Worker nur
@@ -82,6 +112,13 @@ den zweiten Sandbox-Container zu verwalten.
   Auftrag, maximal 64 KiB Prompt, maximal 4 MiB Ausgabe und maximal 30 Minuten
   Laufzeit. Login, Logout, Modellwahl und Containerverwaltung bleiben
   Operator-Kommandos.
+- Die generische Agent-RPC akzeptiert zusätzlich ausschließlich `cancel`.
+  Der Agent-MCP exponiert genau neun Werkzeuge und keine Credential-, Login-,
+  Docker-, Rechte- oder Team-Mutationsoperation.
+- Artefakte sind auf 32 MiB begrenzt, tragen SHA-256 und werden vor dem Lesen
+  geprüft. Modellzugriff ist auf 1 MiB und Text, JSON oder Git-Patches begrenzt.
+  Team-DAGs werden vor Anwendung auf unbekannte Felder, Referenzen und Zyklen
+  geprüft; Agenten teilen keinen implizit beschreibbaren Workspace.
 
 Hermes' fest eingebauter Basis-Systemprompt ist weiterhin vorhanden. Entfernt
 werden die persönlichen und projektbezogenen Zusatzquellen, nicht der
@@ -137,14 +174,17 @@ Agent-Kern selbst.
    mit `commandline` Programme ausführen. Prompt Injection in Worker-Dateien
    wird dann relevant.
 
-10. **Worker-Credentials müssen im Worker lesbar sein.** Der jeweilige CLI-
+10. **Worker- und Broker-Credentials müssen im zugewiesenen Container lesbar
+    sein.** Der jeweilige CLI-
     Prozess benötigt seinen persistenten Login-State. Ein Kompromiss dieses
     einen Worker-Containers kann deshalb dessen Account-Token und Workspace
     betreffen. Getrennte States und Sockets begrenzen dies auf diesen Worker,
     machen das Token aber nicht innerhalb desselben Containers geheim.
     Insbesondere Datei- oder Shell-Rechte sind daher keine Isolation vom
-    Login-State derselben CLI. Für hohe Assurance sind kurzlebige,
-    geringprivilegierte Accounts oder ein externer Credential-Broker nötig.
+    Login-State derselben CLI. Der projektinterne Credential-Broker ist eine
+    Mount-/Zuordnungsgrenze zwischen Instanzen, kein verschlüsselnder Vault und
+    kein Token-Proxy. Für hohe Assurance sind kurzlebige, geringprivilegierte
+    Accounts oder ein externer Secret-/Credential-Broker nötig.
 
 11. **Worker-Egress ist absichtlich unabhängig von `shell-network`.** Der
     netzlose Hermes-Command-Sandbox kann über einen Socket einen Worker
@@ -154,9 +194,12 @@ Agent-Kern selbst.
     Dort keine zusätzlichen Secrets ablegen.
 
 12. **Die drei Toolmodelle sind nicht identisch.** Codex bietet keine separat
-    schaltbaren nativen Datei- und Shell-Tools; `tools` verwendet dort den
-    Shell-Toolpfad in einer read-only Sandbox und `commandline` erweitert auf
-    workspace-write. Claude trennt Dateiwerkzeuge und Bash. OpenCode trennt
+    schaltbaren nativen Datei- und Shell-Tools. Seine innere read-only-
+    `bubblewrap`-Sandbox kann im `cap_drop:ALL`-Container nicht initialisieren;
+    deshalb bleibt die Shell ohne `commandline` aus und nutzt mit
+    `tools+commandline` ausschließlich die äußere Docker-Isolation. Generische
+    Codex-Instanzen erzwingen dafür das gesamte Arbeits-/Netz-Bündel. Claude
+    trennt Dateiwerkzeuge und Bash. OpenCode trennt
     seine Permissions, aber Bash läuft im Worker mit dessen Egress. Die
     Statusausgabe benennt diese Abbildung ausdrücklich.
 
@@ -182,6 +225,54 @@ Agent-Kern selbst.
     außen veröffentlichen. Die dauerhaften Provider-Tokens werden nicht von
     der UI gelesen, liegen aber weiterhin im jeweiligen Worker-State.
 
+15. **`network` ist eine ausdrückliche Risikobestätigung, keine Domain-
+    Firewall.** Coding-CLIs brauchen Provider-Egress. Aktivierte Bash läuft im
+    selben Container und kann deshalb dieselbe, nicht auf Provider-Domains
+    gefilterte Bridge verwenden. Die Policy verlangt `network` vor
+    `commandline`, trennt den Verkehr aber nicht technisch nach Ziel-Domain.
+
+16. **Persistente Jobs sind kein hochverfügbarer Queue-Dienst.** Status und
+    Artefakte überleben den aufrufenden Prozess, ein Host-Neustart kann einen
+    gerade laufenden Hintergrundjob jedoch ohne Abschlusszustand zurücklassen.
+    Für verteilte oder hochverfügbare Ausführung ist ein externer Queue-/Runner-
+    Dienst nötig. Teamläufe stoppen fail-closed beim ersten blockierten oder
+    fehlgeschlagenen Schritt.
+
+17. **Geteilte Broker-Credentials schwächen die Isolation.** Sie sind nur mit
+    einem expliziten `--share-credential`/`--share` möglich. Gleichzeitig
+    laufende CLIs können denselben Token-State aktualisieren oder sperren. Pro
+    Agent ein eigenes Credential ist der sichere Standard.
+
+18. **Evaluationen sind reine Operator-Aktionen.** Weder Hermes-MCP noch
+    Agent-Skills erhalten Create/Run/Cancel/Export-Operationen. Die lokale
+    Oberfläche bindet ausschließlich an `127.0.0.1`, verlangt einen zufälligen
+    Bearer-Token, prüft Origin und sendet CSP-, Frame- und No-Store-Header.
+
+19. **Trial-Eingaben werden vor dem Lauf snapshotiert.** Manifeste akzeptieren
+    nur explizite reguläre Dateien und Verzeichnisse. Symlinks, Spezialdateien,
+    Pfadtraversierung, mehr als 10.000 Dateien oder mehr als 32 MiB pro Snapshot
+    werden abgewiesen. Archive werden einzeln in einen validierten temporären
+    Agent-Pfad geschrieben; `extractall` wird nicht verwendet. Kanonische
+    Worker- und Quellagent-Kontexte werden nicht verändert.
+
+20. **Evaluationen teilen ausschließlich das ausgewählte Credential.** Jeder
+    Trial besitzt ansonsten eigenen State, Workspace, Kontext, Socket und
+    Container. Manifest v1 erzwingt einen Trial je Credential, um parallele
+    Token-Refresh-Rennen innerhalb eines Experiments zu vermeiden. Eine
+    gleichzeitig außerhalb der Evaluation gestartete Nutzung muss der
+    Operator weiterhin ausschließen.
+
+21. **Trial-Aufräumen erfolgt fail-closed.** Vor dem Löschen werden sämtliche
+    Rechte entfernt und der Docker-Stack gestoppt. Scheitert der Stopp, bleiben
+    Registry und Diagnosezustand erhalten. `resume` bereinigt einen nach einem
+    Prozessabbruch als laufend markierten Trial vor der Wiederholung.
+
+22. **Kosten sind vom Abrechnungsmodus abhängig.** Providerwerte werden nur
+    bei `billing_mode: api` als `reported_cost_usd` übernommen. Monatsabos und
+    lokale Modelle erhalten keinen erfundenen Kostenwert. Roh- und
+    normalisierte Antworten sind Operator-Artefakte und können sensible
+    Modellausgaben enthalten.
+
 ## Empfohlene Freigabereihenfolge
 
 1. Nullzustand (`reset`) und reine Dialogqualität prüfen.
@@ -203,3 +294,11 @@ Agent-Kern selbst.
 11. `*-direct` nur ergänzen, wenn der direkte Commandline-Weg wirklich nötig
     ist. Weitere Worker einzeln und erst nach Prüfung ihres privaten Workspaces
     freigeben.
+12. Generische Agenten zuerst mit eigener Broker-Zuordnung und leerem Profil
+    erstellen; bei Claude/OpenCode `inspect`, dann `edit`, zuletzt
+    `commandline+network` prüfen. Codex nur nach Erklärung seines vollständigen
+    `[special]`-Bündels freigeben.
+13. Teams zunächst mit `team apply --explain` prüfen. MCP erst danach mit
+    `agents-mcp`; `agents-direct` nur wenn der direkte Weg erforderlich ist.
+14. Evaluationen zuerst mit `benchmark plan` prüfen. Manifestpfade und
+    Context-/Workspace-Quellen nur aus kontrollierten Verzeichnissen verwenden.

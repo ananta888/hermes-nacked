@@ -28,10 +28,16 @@ executor.
 - `mcp__hermesctl__access_enable`: enable common features for one target.
 - `mcp__hermesctl__access_disable`: disable common features for one target.
 - `mcp__hermesctl__access_reset`: reset only that target.
+- `mcp__hermesctl__agent_list`: list redacted registered agents.
+- `mcp__hermesctl__agent_rights`: inspect one agent's granular policy.
+- `mcp__hermesctl__agent_explain`: explain engine mappings and alternatives.
+- `mcp__hermesctl__agent_grant`: grant explicit rights for the next task.
+- `mcp__hermesctl__agent_revoke`: revoke explicit rights for the next task.
+- `mcp__hermesctl__agent_reset`: return one agent to model-only.
 
 Targets are `hermes`, `codex`, `claude`, and `opencode`. Their shared feature
 names are `tool-use`, `commandline`, `skills`, `agents-md`, and `claude-md`.
-Use these five tools by default. The following nine tools are retained for
+Use the matching common/agent tools by default. The following nine tools are retained for
 compatibility and Hermes-only advanced capabilities:
 
 - `mcp__hermesctl__status`: inspect effective policy.
@@ -48,6 +54,7 @@ Valid capabilities are `files`, `commandline`, `skills`, `web`, `code`,
 `planning`, `shell-network`, `orchestrator`, `claude-md`, `hermesctl-direct`, and
 `hermesctl-mcp`, plus `codex-direct`, `codex-mcp`, `claude-direct`,
 `claude-mcp`, `opencode-direct`, and `opencode-mcp`.
+The generic instance capabilities are `agents-direct` and `agents-mcp`.
 
 For Hermes itself, `agents-md` and `AGENTS.md` alias `orchestrator`; the
 independent `claude-md` capability loads the protected root CLAUDE.md.
@@ -57,10 +64,17 @@ Worker features are `tools`, `commandline`, `skills`, `agents-md`, and
 `codex`, `claude`, or `opencode` and never broaden another worker's profile.
 
 Treat `[special]` and `[controlled]` from `access_explain` as actionable
-warnings. Codex `tool-use` is its shell tool inside a read-only sandbox; offer
-model-only, inspection-only, or Claude/OpenCode as the returned alternatives.
+warnings. Codex's inner read-only bubblewrap cannot initialize in the hardened
+worker. Legacy shell access therefore needs `commandline`; generic Codex
+instances require inspect+edit+commandline+network together. Offer model-only
+or Claude/OpenCode as the safer native-split alternatives.
 Worker `skills` injects reviewed SKILL.md bodies and leaves native dynamic
 skill discovery disabled.
+
+Registered-agent rights are `inspect`, `edit`, `commandline`, `network`,
+`skills`, `agents-md`, and `claude-md`. Always inspect and explain first.
+Credential assignment, login, Docker, teams, jobs, artifacts, models, and
+lifecycle operations are deliberately absent from this server.
 
 Never use unrelated MCP servers, edit the capability file directly, or imply
 that the current session's tool list changed. If these MCP tools are absent,

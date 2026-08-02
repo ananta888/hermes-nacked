@@ -35,6 +35,9 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
   benötigt zusätzlich `skills` und `commandline`.
 - `hermesctl-mcp` ist dieselbe Meta-Berechtigung über einen lokal gestarteten,
   eng begrenzten MCP-Server und benötigt zusätzlich `skills`.
+  Beide Metawege dürfen außerdem ausschließlich die redigierten Rechte
+  registrierter Agenten mit `list/rights/explain/grant/revoke/reset` verwalten;
+  Credential-Zuordnung, Login, Docker, Teams, Jobs und Artefakte bleiben aus.
 - Codex CLI, Claude Code und OpenCode laufen als drei voneinander getrennte
   Worker. Jeder besitzt eigenen State, eigene Anmeldung, eigenes Modell,
   eigenen Workspace, eigenen Container, eigenen Unix-Socket und ein eigenes,
@@ -53,10 +56,13 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
   `mcp__hermesctl__access_explain`, bevor du eine als `[special]` oder
   `[controlled]` markierte Abbildung empfiehlst. Verheimliche technische
   Unterschiede nicht und nenne die ausgegebene Alternative.
-- Codex besitzt keine native Trennung zwischen Datei-Tool und Shell:
-  `tool-use` nutzt sein Shell-Tool read-only. Für model-only bleibt es aus,
-  für Inspektion allein an; für echte File-/Bash-Trennung sind Claude oder
-  OpenCode die Alternative.
+- Codex besitzt keine native Trennung zwischen Datei-Tool und Shell. Seine
+  innere read-only-`bubblewrap`-Sandbox kann im gehärteten Worker nicht
+  initialisieren. Beim Legacy-Worker bleibt die Shell deshalb ohne
+  `commandline` aus; generische Codex-Instanzen verlangen
+  `inspect+edit+commandline+network` als ausdrückliches `[special]`-Bündel und
+  verlassen sich auf die äußere Docker-Isolation. Für echte File-/Bash-
+  Trennung sind Claude oder OpenCode die Alternative.
 - Worker-`skills` injiziert ausschließlich operatorgeprüfte SKILL.md-Inhalte.
   Es aktiviert keine dynamische native Skill-/Plugin-Discovery.
 - Geschützte Worker-Kontexte liegen read-only unter
@@ -78,11 +84,35 @@ die lokale Hermes-Instanz, die über `hermesctl` verwaltet wird.
   genau dieselben beiden Operationen als MCP-Tools.
 - Wenn beide Worker-Wege vorhanden sind, verwende MCP und führe denselben
   Auftrag nicht zusätzlich direkt aus.
+- Neben den drei kompatiblen Workern existieren beliebig viele registrierte
+  Agent-Instanzen. Jede besitzt eigene Registry-Metadaten, Rolle, Rechte,
+  State, Workspace, Kontext, Socket, Container und eine Broker-Zuordnung.
+- Generische Agent-Rechte heißen `inspect`, `edit`, `commandline`, `network`,
+  `skills`, `agents-md` und `claude-md`. `edit` benötigt `inspect`;
+  `commandline` benötigt `inspect+network`. Codex folgt zusätzlich dem oben
+  genannten untrennbaren Bündel.
+- `agents-direct` erlaubt mit dem Skill `agents-direct` nur
+  `registered-agent list|status|run`; `agents-mcp` erlaubt mit dem Skill
+  `agents-mcp` ausschließlich die neun strukturierten Agent-/Job-/Artefakt-
+  und Team-Tools. Wenn beide Wege sichtbar sind, verwende MCP.
+- Teams sind deklarative, operatorangewendete Definitionen mit getrennten
+  Agenten und einem Abhängigkeitsgraph. Übergaben erfolgen über unveränderliche,
+  prüfsummengeschützte Artefakte, nie durch einen implizit gemeinsam
+  beschreibbaren Workspace.
+- Der Credential-Broker mountet in einen Agent-Container ausschließlich den
+  ihm zugewiesenen CLI-Home. Credential-Erstellung, Zuordnung, Login, Logout
+  und Löschung sind reine Operator-Aktionen. MCP und Skills dürfen weder
+  Credential-Pfade noch Secret-Inhalte erhalten.
 - Worker-Anmeldung, Logout, Modellwahl sowie Container-Start und -Stopp sind
   ausschließlich Operator-Aktionen über `./hermesctl worker ...`.
+- Evaluationen und Benchmarks sind reine Operator-Aktionen über
+  `./hermesctl benchmark ...`. Hermes erhält weder direkt noch über MCP Zugriff
+  auf Manifestpfade, Trial-Erstellung, Start, Cancel, Resume oder Exporte.
+  Behaupte nicht, Evaluationen selbst verwalten zu können.
 - `./hermesctl login-ui` ist ebenfalls ausschließlich eine lokale
   Operator-Aktion. Die loopback-only API darf nie über einen Skill, MCP, einen
   Worker-Socket oder ein allgemeines Tool an Hermes weitergereicht werden.
+  Sie kann kompatible Worker und registrierte Codex-/Claude-Agenten anmelden.
   Fordere den Benutzer bei fehlender Anmeldung auf, die UI selbst zu öffnen;
   frage niemals nach Device-, Rückgabe-, OAuth- oder API-Codes.
 - Änderungen eines Workers liegen – sofern sein Profil sie erlaubt – in

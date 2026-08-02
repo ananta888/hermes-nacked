@@ -18,11 +18,13 @@ CAPABILITY_TOOLSETS: dict[str, tuple[str, ...]] = {
     "codex-mcp": ("codex_worker",),
     "claude-mcp": ("claude_worker",),
     "opencode-mcp": ("opencode_worker",),
+    "agents-mcp": ("agents",),
     # These capabilities alter context/mount policy but add no toolset.
     "hermesctl-direct": (),
     "codex-direct": (),
     "claude-direct": (),
     "opencode-direct": (),
+    "agents-direct": (),
     "orchestrator": (),
     "claude-md": (),
 }
@@ -62,6 +64,8 @@ class Policy:
     direct_workers: tuple[str, ...]
     mcp_workers: tuple[str, ...]
     workers: tuple[str, ...]
+    generic_agents_direct: bool
+    generic_agents_mcp: bool
 
 
 def normalize_capability(value: str) -> str:
@@ -108,6 +112,11 @@ def parse_capabilities(raw: str | None) -> Policy:
         if mcp in values and "skills" not in values:
             raise PolicyError(f"{mcp} requires skills")
 
+    if "agents-direct" in values and not {"commandline", "skills"}.issubset(values):
+        raise PolicyError("agents-direct requires both commandline and skills")
+    if "agents-mcp" in values and "skills" not in values:
+        raise PolicyError("agents-mcp requires skills")
+
     toolsets: list[str] = []
     for capability in sorted(values):
         for toolset in CAPABILITY_TOOLSETS.get(capability, ()):
@@ -134,7 +143,11 @@ def parse_capabilities(raw: str | None) -> Policy:
             values.intersection({"hermesctl-direct", "hermesctl-mcp"})
         ),
         direct_control="hermesctl-direct" in values,
-        enable_mcp=("hermesctl-mcp" in values or bool(mcp_workers)),
+        enable_mcp=(
+            "hermesctl-mcp" in values
+            or "agents-mcp" in values
+            or bool(mcp_workers)
+        ),
         load_orchestrator="orchestrator" in values,
         load_claude_context="claude-md" in values,
         load_context_files=bool(
@@ -143,4 +156,6 @@ def parse_capabilities(raw: str | None) -> Policy:
         direct_workers=direct_workers,
         mcp_workers=mcp_workers,
         workers=workers,
+        generic_agents_direct="agents-direct" in values,
+        generic_agents_mcp="agents-mcp" in values,
     )

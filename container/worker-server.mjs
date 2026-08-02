@@ -7,8 +7,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const kind = String(process.env.WORKER_KIND || "").trim().toLowerCase();
+const workerId = String(process.env.WORKER_ID || kind).trim().toLowerCase();
 const socketPath = process.env.WORKER_SOCKET || "/worker-socket/worker.sock";
 const workerHome = process.env.WORKER_HOME || "/home/worker";
+const workerState = process.env.WORKER_STATE || workerHome;
 const workspace = process.env.WORKER_WORKSPACE || "/workspace";
 const controlFile = process.env.WORKER_CONTROL_FILE || "/worker-control/capabilities";
 const contextRoot = process.env.WORKER_CONTEXT || "/worker-context";
@@ -18,8 +20,12 @@ const maxRequestBytes = 96 * 1024;
 const maxOutputBytes = 4 * 1024 * 1024;
 const maxInstructionBytes = 128 * 1024;
 const maxWorkspaceEntries = 250000;
+const granularPolicy = process.env.WORKER_POLICY_MODE === "granular";
 const workers = new Set(["codex", "claude", "opencode"]);
-const features = new Set(["tools", "commandline", "skills", "agents-md", "claude-md"]);
+const legacyFeatures = new Set(["tools", "commandline", "skills", "agents-md", "claude-md"]);
+const granularFeatures = new Set([
+  "inspect", "edit", "commandline", "network", "skills", "agents-md", "claude-md",
+]);
 const featureAliases = new Map([
   ["tool", "tools"],
   ["tool-use", "tools"],
@@ -48,15 +54,36 @@ function readPolicy() {
   const enabled = new Set(
     raw.replaceAll(",", " ").split(/\s+/u).map(normalizeFeature).filter(Boolean),
   );
-  const unknown = [...enabled].filter((item) => !features.has(item)).sort();
+  const allowedFeatures = granularPolicy ? granularFeatures : legacyFeatures;
+  const unknown = [...enabled].filter((item) => !allowedFeatures.has(item)).sort();
   if (unknown.length) throw new Error(`unknown worker features: ${unknown.join(", ")}`);
-  if (enabled.has("commandline") && !enabled.has("tools")) {
-    throw new Error("worker commandline requires tools; policy is invalid");
+  if (!granularPolicy && enabled.has("commandline") && !enabled.has("tools")) {
+    throw new Error("worker commandline requires tools; legacy policy is invalid");
   }
+  if (granularPolicy && enabled.has("edit") && !enabled.has("inspect")) {
+    throw new Error("agent edit requires inspect; policy is invalid");
+  }
+  if (granularPolicy && enabled.has("commandline") &&
+      (!enabled.has("inspect") || !enabled.has("network"))) {
+    throw new Error("agent commandline requires inspect and network; policy is invalid");
+  }
+  const codexBundle = ["inspect", "edit", "commandline"];
+  if (granularPolicy && kind === "codex" &&
+      codexBundle.some((item) => enabled.has(item)) &&
+      (!codexBundle.every((item) => enabled.has(item)) || !enabled.has("network"))) {
+    throw new Error("Codex requires inspect, edit, commandline, and network together");
+  }
+  const inspect = granularPolicy ? enabled.has("inspect") : enabled.has("tools");
+  const edit = granularPolicy ? enabled.has("edit") : enabled.has("tools");
+  const commandline = enabled.has("commandline");
   return Object.freeze({
     features: [...enabled].sort(),
-    tools: enabled.has("tools"),
-    commandline: enabled.has("commandline"),
+    policy_mode: granularPolicy ? "granular" : "legacy",
+    inspect,
+    edit,
+    tools: inspect || edit || commandline,
+    commandline,
+    network: granularPolicy ? enabled.has("network") : commandline || kind === "codex",
     skills: enabled.has("skills"),
     agents_md: enabled.has("agents-md"),
     claude_md: enabled.has("claude-md"),
@@ -180,8 +207,21 @@ function createInstructionFile(instructions) {
 }
 
 function codexInvocation(prompt, model, policy, instructions) {
+  // bubblewrap (codex' eigenes internes Sandboxing fuer workspace-write UND
+  // read-only) kann in diesem Container keine Namespace erstellen, weil der
+  // Worker-Container selbst schon mit cap_drop:[ALL] und no-new-privileges
+  // haertet ("bwrap: No permissions to create a new namespace"). Der aeussere
+  // Docker-Container isoliert bereits (nur /workspace beschreibbar, kein Host-
+  // Zugriff) -- codex' eigene Sandbox waere hier doppelte, aktuell defekte
+  // Verteidigung. Fix: --dangerously-bypass-approvals-and-sandbox NUR wenn
+  // tools+commandline gemeinsam aktiv sind (volles Lesen/Schreiben in
+  // /workspace). Es gibt keinen funktionierenden Weg mehr, ueber codex'
+  // eigene Sandbox nur LESENDE Shell-Nutzung zu erzwingen (read-only
+  // scheitert am selben bwrap-Fehler) -- deshalb bleibt shell_tool bei
+  // tools-ohne-commandline sicherheitshalber komplett deaktiviert, statt
+  // versehentlich vollen Schreibzugriff zu gewaehren.
+  const shellEnabled = policy.tools && policy.commandline;
   const args = [
-    "--ask-for-approval", "never",
     "--strict-config",
     "--disable", "apps",
     "--disable", "browser_use",
@@ -195,16 +235,20 @@ function codexInvocation(prompt, model, policy, instructions) {
     "--disable", "multi_agent",
     "--disable", "plugins",
     "--disable", "remote_plugin",
-    policy.tools ? "--enable" : "--disable", "shell_tool",
+    shellEnabled ? "--enable" : "--disable", "shell_tool",
     "-c", "project_doc_max_bytes=0",
     "-c", 'web_search="disabled"',
   ];
+  if (!shellEnabled) args.push("--ask-for-approval", "never");
   if (instructions) args.push("-c", `developer_instructions=${JSON.stringify(instructions)}`);
   if (model) args.push("--model", model);
+  args.push("exec", "--ephemeral", "--json");
+  if (shellEnabled) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  } else {
+    args.push("--sandbox", "read-only");
+  }
   args.push(
-    "exec",
-    "--ephemeral",
-    "--sandbox", policy.commandline ? "workspace-write" : "read-only",
     "--skip-git-repo-check",
     "--ignore-user-config",
     "--ignore-rules",
@@ -215,9 +259,11 @@ function codexInvocation(prompt, model, policy, instructions) {
 
 function claudeInvocation(prompt, model, policy, instructions) {
   const instructionFile = createInstructionFile(instructions);
-  const allowedTools = policy.tools
-    ? ["Read", "Glob", "Grep", "Edit", "Write", ...(policy.commandline ? ["Bash"] : [])]
-    : [];
+  const allowedTools = [
+    ...(policy.inspect ? ["Read", "Glob", "Grep"] : []),
+    ...(policy.edit ? ["Edit", "Write"] : []),
+    ...(policy.commandline ? ["Bash"] : []),
+  ];
   const args = [
     "-p",
     "--output-format", "json",
@@ -248,10 +294,10 @@ function opencodeInvocation(prompt, model, policy, instructions) {
     question: "deny",
     webfetch: "deny",
     websearch: "deny",
-    read: policy.tools ? "allow" : "deny",
-    glob: policy.tools ? "allow" : "deny",
-    grep: policy.tools ? "allow" : "deny",
-    edit: policy.tools ? "allow" : "deny",
+    read: policy.inspect ? "allow" : "deny",
+    glob: policy.inspect ? "allow" : "deny",
+    grep: policy.inspect ? "allow" : "deny",
+    edit: policy.edit ? "allow" : "deny",
     bash: policy.commandline ? "allow" : "deny",
   };
   const config = {
@@ -296,31 +342,40 @@ let activeChild = null;
 
 function enforcementSummary(policy) {
   if (kind === "codex") {
+    const shellEnabled = policy.tools && policy.commandline;
     return {
-      tools: policy.tools ? "shell_tool in read-only sandbox" : "shell_tool disabled",
-      commandline: policy.commandline ? "workspace-write sandbox" : "no workspace writes",
+      inspect: shellEnabled
+        ? "shell_tool enabled (--dangerously-bypass-approvals-and-sandbox; codex' own bwrap sandbox cannot init under this container's cap_drop:ALL, so the outer Docker isolation is the only sandbox layer)"
+        : "shell_tool disabled (read-only shell also fails under bwrap in this container; disabled instead of silently granting write access)",
+      edit: shellEnabled ? "workspace read/write through the same shell_tool" : "disabled",
+      commandline: policy.commandline ? "workspace read/write via bypass, no codex-internal sandbox" : "no shell at all",
+      network: policy.network ? "shell shares the provider-connected container egress" : "no shell surface",
       skills: policy.skills ? "approved SKILL.md bodies injected" : "skills absent",
       custom_context: "automatic project instructions disabled; protected context injected explicitly",
     };
   }
   if (kind === "claude") {
     return {
-      tools: policy.tools ? "Read,Glob,Grep,Edit,Write" : "all built-in tools disabled",
+      inspect: policy.inspect ? "Read,Glob,Grep" : "read/search tools disabled",
+      edit: policy.edit ? "Edit,Write" : "write tools disabled",
       commandline: policy.commandline ? "Bash enabled" : "Bash absent",
+      network: policy.network ? "Bash shares provider egress when enabled" : "no network-capable tool",
       skills: policy.skills ? "approved SKILL.md bodies injected" : "skills absent",
       custom_context: "safe mode; protected context injected explicitly",
     };
   }
   return {
-    tools: policy.tools ? "read,glob,grep,edit allowed" : "file tools denied",
+    inspect: policy.inspect ? "read,glob,grep allowed" : "read/search denied",
+    edit: policy.edit ? "edit allowed" : "edit denied",
     commandline: policy.commandline ? "bash allowed" : "bash denied",
+    network: policy.network ? "bash shares provider egress when enabled" : "no network-capable tool",
     skills: policy.skills ? "approved SKILL.md bodies injected; native Skill denied" : "skills absent",
     custom_context: "project config/external skills disabled; explicit permission deny-list",
   };
 }
 
 function readModel() {
-  const modelPath = path.join(workerHome, ".worker-model");
+  const modelPath = path.join(workerState, ".worker-model");
   try {
     const model = fs.readFileSync(modelPath, "utf8").trim();
     if (!model) return "";
@@ -407,9 +462,22 @@ async function handleRequest(request) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     return { ok: false, error: "request must be an object" };
   }
-  if (activeChild) return { ok: false, error: `${kind} worker is busy` };
-
   const operation = String(request.operation || "");
+  if (operation === "cancel") {
+    if (!activeChild) {
+      return { ok: true, worker: workerId, engine: kind, cancelled: false, state: "idle" };
+    }
+    const child = activeChild;
+    child.kill("SIGTERM");
+    setTimeout(() => {
+      if (activeChild === child) child.kill("SIGKILL");
+    }, 5000).unref();
+    return { ok: true, worker: workerId, engine: kind, cancelled: true, state: "cancelling" };
+  }
+  if (activeChild) {
+    return { ok: false, worker: workerId, engine: kind, error: `${workerId} worker is busy` };
+  }
+
   const model = readModel();
   const policy = readPolicy();
   if (operation === "status") {
@@ -417,7 +485,9 @@ async function handleRequest(request) {
     const auth = await runProcess(spec.authStatus, 30);
     return {
       ok: true,
-      worker: kind,
+      worker: workerId,
+      engine: kind,
+      cli_version: process.env.WORKER_CLI_VERSION || null,
       model: model || null,
       workspace,
       policy,
@@ -443,7 +513,8 @@ async function handleRequest(request) {
   if (violations.length) {
     return {
       ok: false,
-      worker: kind,
+      worker: workerId,
+      engine: kind,
       policy,
       error: "workspace contains customization sources whose worker feature is disabled",
       violations,
@@ -461,7 +532,9 @@ async function handleRequest(request) {
   );
   return {
     ok: result.exit_code === 0 && !result.timed_out,
-    worker: kind,
+    worker: workerId,
+    engine: kind,
+    cli_version: process.env.WORKER_CLI_VERSION || null,
     model: model || null,
     policy,
     enforcement: enforcementSummary(policy),
@@ -502,7 +575,7 @@ const server = net.createServer((socket) => {
       const response = await handleRequest(request);
       socket.end(`${JSON.stringify(response)}\n`);
     } catch (error) {
-      socket.end(`${JSON.stringify({ ok: false, worker: kind, error: String(error.message || error) })}\n`);
+      socket.end(`${JSON.stringify({ ok: false, worker: workerId, engine: kind, error: String(error.message || error) })}\n`);
     }
   });
 
@@ -511,7 +584,7 @@ const server = net.createServer((socket) => {
 
 server.listen(socketPath, () => {
   fs.chmodSync(socketPath, 0o660);
-  process.stdout.write(`${kind} worker listening on ${socketPath}\n`);
+  process.stdout.write(`${workerId} (${kind}) worker listening on ${socketPath}\n`);
 });
 
 function shutdown() {

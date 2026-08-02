@@ -14,13 +14,28 @@
         <h1>Abo-Anmeldung</h1>
         <p class="lead">
           Melde die isolierten Codex- und Claude-Worker über ihre originalen
-          CLI-Flows an. Diese Seite läuft ausschließlich auf
+          CLI-Flows an. Registrierte Agent-Instanzen verwenden dabei ihren
+          jeweils vom Credential-Broker getrennten CLI-Home. Diese Seite läuft ausschließlich auf
           <code>127.0.0.1</code> und gibt Hermes selbst kein Login-Werkzeug.
         </p>
       </header>
 
       <section id="connection" class="notice" aria-live="polite">
         API-Verbindung wird geprüft …
+      </section>
+
+      <section aria-labelledby="agents-heading">
+        <div class="section-heading">
+          <p class="tag">Credential-Broker</p>
+          <h2 id="agents-heading">Registrierte Agent-Instanzen</h2>
+          <p class="lead compact-lead">
+            Jede Karte meldet genau die gewählte Instanz an. Andere Credential-Homes
+            werden nicht gemountet und Secret-Inhalte erscheinen nie in dieser API.
+          </p>
+        </div>
+        <div id="agent-cards" class="workers">
+          <article class="worker-card placeholder-card">Noch keine geeigneten Agenten registriert.</article>
+        </div>
       </section>
 
       <section class="workers" aria-label="Worker-Anmeldungen">
@@ -89,9 +104,20 @@
         <pre id="status-output">Noch nicht geprüft.</pre>
       </section>
 
+      <section class="status-panel" aria-labelledby="dashboard-heading">
+        <div class="terminal-header">
+          <div>
+            <p class="tag">Read-only Control Plane</p>
+            <h2 id="dashboard-heading">Agenten, Teams und Jobs</h2>
+          </div>
+          <button id="refresh-dashboard" class="secondary">Aktualisieren</button>
+        </div>
+        <pre id="dashboard-output">Wird geladen …</pre>
+      </section>
+
       <footer>
-        Credentials werden nicht von dieser Web-App gelesen. Codex und Claude
-        speichern sie ausschließlich in ihrem eigenen persistenten Worker-State.
+        Credentials werden nicht von dieser Web-App gelesen. Der Broker mountet
+        ausschließlich den zugewiesenen persistenten CLI-Home der gewählten Instanz.
       </footer>
     </main>
   </body>

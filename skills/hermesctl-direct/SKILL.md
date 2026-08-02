@@ -30,7 +30,18 @@ hermesctl access codex enable tool-use agents-md
 hermesctl access codex enable commandline
 hermesctl access codex disable claude-md
 hermesctl access codex reset
+hermesctl agent list
+hermesctl agent rights backend
+hermesctl agent explain backend
+hermesctl agent grant backend inspect edit
+hermesctl agent revoke backend edit
+hermesctl agent reset backend
 ```
+
+Registered agents use `inspect`, `edit`, `commandline`, `network`, `skills`,
+`agents-md`, and `claude-md`. Check `agent rights` and `agent explain` before
+every change. The mounted registry is redacted; credential, login, Docker,
+team, job, artifact, model, and lifecycle commands remain unavailable.
 
 Targets are `hermes`, `codex`, `claude`, and `opencode`. Their shared feature
 names are `tool-use`, `commandline`, `skills`, `agents-md`, and `claude-md`.
@@ -42,11 +53,13 @@ Valid capabilities are `files`, `commandline`, `skills`, `web`, `code`,
 `planning`, `shell-network`, `orchestrator`, `claude-md`, `hermesctl-direct`, and
 `hermesctl-mcp`, plus `codex-direct`, `codex-mcp`, `claude-direct`,
 `claude-mcp`, `opencode-direct`, and `opencode-mcp`.
+The generic instance capabilities are `agents-direct` and `agents-mcp`.
 
 Respect dependencies: `shell-network` needs `commandline` or `code`;
 `hermesctl-direct` needs `commandline` and `skills`; `hermesctl-mcp` needs
 `skills`. Every worker `*-direct` capability needs `commandline` and `skills`;
 every worker `*-mcp` capability needs `skills`.
+`agents-direct` needs `commandline` and `skills`; `agents-mcp` needs `skills`.
 
 For Hermes itself, `agents-md` and `AGENTS.md` alias `orchestrator`; the
 independent `claude-md` capability loads the protected root CLAUDE.md.
@@ -57,9 +70,11 @@ Worker features are `tools`, `commandline`, `skills`, `agents-md`, and
 as a convenience. The feature files are not Hermes session capabilities.
 
 Treat `[special]` and `[controlled]` from `access ... explain` as actionable
-warnings. Codex `tool-use` is its shell tool inside a read-only sandbox, not a
-native file-only tool. Offer model-only, inspection-only, or Claude/OpenCode
-as the listed alternatives instead of hiding this difference. Worker `skills`
+warnings. The hardened Codex container cannot initialize Codex's inner
+read-only bubblewrap. Its legacy shell stays disabled without `commandline`;
+generic Codex instances require inspect+edit+commandline+network together and
+rely on outer Docker isolation. Offer model-only or Claude/OpenCode for native
+separation instead of hiding this difference. Worker `skills`
 means reviewed SKILL.md bodies injected by the broker; it does not enable a
 dynamic native skill surface.
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Registered Agents MCP"
+  short_description: "Orchestrate registered agents, jobs, and artifacts"
+  default_prompt: "Use $agents-mcp to orchestrate registered Hermes agents through scoped MCP tools."

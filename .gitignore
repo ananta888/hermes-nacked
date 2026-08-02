@@ -4,6 +4,16 @@ runtime/state/**
 runtime/workspace/**
 runtime/workers/**
 runtime/control/**
+runtime/agents/**
+runtime/credentials/**
+runtime/sockets/**
+runtime/jobs/**
+runtime/artifacts/**
+runtime/teams/**
+runtime/runs/**
+runtime/evaluations/**
+runtime/locks/**
+runtime/registry/**
 !runtime/state/.gitkeep
 !runtime/workspace/.gitkeep
 !runtime/control/.gitkeep

@@ -137,12 +137,14 @@ Sicherheitsmechanismen ab. Er markiert jede Zeile:
 - `[special]`: Die Ziel-CLI kann das gemeinsame Konzept technisch nicht exakt
   abbilden. Direkt darunter steht ein `[alternative]`-Pfad.
 
-Besonders wichtig ist Codex: Es hat kein getrenntes natives File-Tool.
-`tool-use` aktiviert dort das Shell-Tool in einer `read-only`-Sandbox;
-`commandline` schaltet denselben Weg auf `workspace-write`. Wer überhaupt
-keine Kommandos erlauben will, lässt Codex model-only. Für reine Inspektion
-genügt `tool-use`; für eine echte native Trennung von Dateiwerkzeugen und Bash
-sind Claude oder OpenCode die Alternative.
+Besonders wichtig ist Codex: Es hat kein getrenntes natives File-Tool und sein
+inneres `bubblewrap` kann im mit `cap_drop: [ALL]` gehärteten Worker keine
+Namespace initialisieren. Deshalb bleibt das Shell-Tool beim Legacy-Worker
+für `tool-use` allein aus und wird erst mit `tool-use+commandline` aktiviert;
+dann bildet ausschließlich der äußere Docker-Container die Sandbox. Generische
+Codex-Instanzen verlangen aus demselben Grund das ausdrückliche Bündel
+`inspect+edit+commandline+network`. Wer keine Kommandos erlauben will, lässt
+Codex model-only oder verwendet Claude/OpenCode für eine native Trennung.
 
 Bei allen Workern benötigt `commandline` ein bereits aktives `tool-use`; beide
 müssen ausdrücklich genannt werden, wenn sie in einem Schritt freigegeben
@@ -189,7 +191,8 @@ ihre Tools, ihren Prompt-Index und ihren Sandbox-Mount. Damit kann man das Recht
 später wieder einschalten, ohne Datenverlust.
 
 Die mit diesem Projekt ausgelieferten Skills `hermesctl-direct`,
-`hermesctl-mcp`, `codex-worker`, `claude-worker` und `opencode-worker` werden
+`hermesctl-mcp`, `codex-worker`, `claude-worker`, `opencode-worker`,
+`agents-direct` und `agents-mcp` werden
 in den persistenten Hermes-State synchronisiert.
 Installiert bedeutet nicht freigegeben: Ohne `skills` erscheinen sie weder im
 Skill-Index noch als Skill-Tools.
@@ -257,12 +260,212 @@ gewinnt“ injiziert die Hülle dann beide explizit. `hermesctl-direct` benötig
 - `mcp__hermesctl__worker_enable`
 - `mcp__hermesctl__worker_disable`
 - `mcp__hermesctl__worker_reset`
+- `mcp__hermesctl__agent_list`
+- `mcp__hermesctl__agent_rights`
+- `mcp__hermesctl__agent_explain`
+- `mcp__hermesctl__agent_grant`
+- `mcp__hermesctl__agent_revoke`
+- `mcp__hermesctl__agent_reset`
 
 Beide `hermesctl-*`-Capabilities sind Meta-Berechtigungen: Ein damit
 ausgestattetes Modell kann die Policy für die nächste Sitzung verändern. Eine
 laufende Sitzung erhält dadurch keine neuen Tools; nach einer Änderung muss sie
 beendet und neu gestartet werden. `reset` entfernt auch diese Meta-Rechte und
 den Orchestrator-Kontext.
+
+## Beliebig viele Agenten und Teams
+
+Die drei festen Worker bleiben als einfache Kompatibilitätsoberfläche erhalten.
+Für mehrere Instanzen derselben Engine ist die generische Registry vorgesehen.
+Eine Instanz besitzt getrennt:
+
+- Engine, Rolle und fein abgestuftes Rechteprofil,
+- persistenten State, privaten Workspace und geschützten Kontext,
+- eigenen Docker-Container und Unix-Socket,
+- eine Credential-Broker-Zuordnung auf genau einen persistenten CLI-Home.
+
+Ein einzelner Agent ist damit schnell aufgesetzt:
+
+```bash
+./hermesctl agent create backend --engine codex --role implementierung
+./hermesctl agent explain backend
+./hermesctl agent grant backend inspect edit commandline network skills agents-md
+./hermesctl agent build backend
+./hermesctl agent login backend       # oder lokal: ./hermesctl login-ui
+./hermesctl agent clone backend /pfad/zum/projekt
+./hermesctl agent start backend
+./hermesctl agent status backend
+./hermesctl agent run backend "Implementiere die begrenzte Aufgabe"
+```
+
+`agent create` erzeugt standardmäßig ein gleichnamiges, isoliertes Credential.
+Explizite Broker-Verwaltung ist ebenfalls möglich:
+
+```bash
+./hermesctl credential create firma-codex --engine codex
+./hermesctl agent create backend --engine codex --credential firma-codex
+./hermesctl credential status firma-codex
+./hermesctl credential list
+```
+
+Ein Credential darf standardmäßig nur einer Instanz zugeordnet sein. Teilen
+erfordert `--share-credential` beziehungsweise `--share`; dadurch ist das
+Risiko paralleler Token-Aktualisierungen ausdrücklich sichtbar. Der Broker
+liest keine Secret-Datei und gibt weder Token noch Home-Pfad über MCP oder
+Skills zurück. `credential delete` verlangt `--yes`, verweigert zugewiesene
+Credentials und entfernt den CLI-Home für dieses Projekt. Eine Instanz wird mit
+`agent delete <id> --yes` entfernt; ihr Broker-Home bleibt standardmäßig
+erhalten. Nur `--delete-credential` entfernt ihn im selben Schritt ebenfalls.
+Das ist keine kryptografisch sichere Löschung; Dateisystem-/Backup-Recovery
+kann nicht ausgeschlossen werden.
+
+Die generischen Rechte sind feiner als die Legacy-Worker-Spec:
+
+| Recht | Wirkung |
+|---|---|
+| `inspect` | Read/Search-Werkzeuge |
+| `edit` | eingebaute Edit-/Write-Werkzeuge; benötigt `inspect` |
+| `commandline` | Bash/Shell; benötigt `inspect+network` |
+| `network` | explizite Bestätigung, dass Shell und Provider den Container-Egress teilen |
+| `skills` | nur geprüfte SKILL.md-Inhalte aus dem Instanzkontext |
+| `agents-md` / `claude-md` | jeweils genau die geschützte Instanzdatei |
+
+Bei Codex sind `inspect+edit+commandline+network` ein `[special]`-Bündel. Bei
+Claude und OpenCode bleiben Inspect, Edit und Bash tatsächlich getrennt.
+
+Teams werden deklarativ und wiederholbar angewendet. Eine Vorlage liefert:
+
+```bash
+./hermesctl team example > team.yaml
+./hermesctl team apply team.yaml --explain   # nur Plan, keine Änderung
+./hermesctl team apply team.yaml
+./hermesctl team status software-team
+./hermesctl team run software-team
+./hermesctl team reset software-team
+```
+
+`team.yaml` Version 1 beschreibt Agenten, Engines, Rollen, Credentials,
+Modelle, exakte Rechte und einen azyklischen Workflow über `needs`. Schritte
+können `approval: true`, `input_artifacts` und ein Timeout setzen. Ausgaben
+werden als unveränderliche, SHA-256-geprüfte Artefakte gespeichert und den
+abhängigen Schritten als Handoff übergeben. Es gibt keinen implizit gemeinsam
+beschreibbaren Team-Workspace. Für Git-Arbeit erhält jeder Agent einen eigenen
+Clone; Patches werden kontrolliert exportiert:
+
+```bash
+./hermesctl agent patch backend backend-fix
+./hermesctl artifact show backend-fix
+./hermesctl artifact get backend-fix ./backend-fix.patch
+```
+
+Einzelne persistente Jobs sind unabhängig vom Team-DAG verfügbar:
+
+```bash
+./hermesctl job submit backend "Führe die Tests aus" --wait
+./hermesctl job status job-0123456789abcdef
+./hermesctl job cancel job-0123456789abcdef
+./hermesctl artifact list
+```
+
+Hermes erhält generischen Zugriff nur nach einer eigenen Freigabe. MCP ist der
+engere Weg:
+
+```bash
+./hermesctl enable orchestrator skills agents-mcp
+./hermesctl chat
+```
+
+`agents-mcp` registriert exakt `list`, `status`, `run`, `job_submit`,
+`job_status`, `job_cancel`, `artifact_get`, `team_list` und `team_status` unter
+`mcp__agents__*`. Es kann weder Container starten noch Rechte, Teams,
+Credentials oder Login verändern. Agent-Container müssen der Operator vorher
+starten. Der alternative direkte Weg benötigt die netzlose Hermes-
+Command-Sandbox:
+
+```bash
+./hermesctl enable orchestrator skills commandline agents-direct
+```
+
+Der Skill darf dort ausschließlich `registered-agent list|status|run` nutzen.
+Credential- und private Control-Verzeichnisse werden nicht gemountet; die
+read-only Registry enthält nur `credential_id: redacted`.
+
+Soll Hermes zusätzlich die granularen Agent-Rechte verwalten, wird unabhängig
+`hermesctl-mcp` oder `hermesctl-direct` freigegeben. Diese Metaebene bietet nur
+`agent_list`, `agent_rights`, `agent_explain`, `agent_grant`, `agent_revoke`
+und `agent_reset`; Broker-Zuordnung, Login, Docker, Teamdefinitionen und
+Job-/Artefaktadministration bleiben Operator-Sache.
+
+## Generische Evaluationen und Benchmarks
+
+Die Evaluation Engine vergleicht registrierte Agenten, Modelle, Rechteprofile,
+Kontexte und Skills ohne feste Aufgabe oder fest einprogrammierte Worker. Das
+Projekt enthält bewusst kein fachliches Kursbeispiel oder Ground Truth. Eine
+neutrale Manifeststruktur wird ausgegeben mit:
+
+```bash
+./hermesctl benchmark example > evaluation.yaml
+```
+
+Ein Manifest Version 1 beschreibt Agenten und Abrechnungsmodus, Prompt und
+optionalen Basis-Workspace, Varianten mit exakten Rechten und temporären
+Workspace-/Kontext-Overlays, Wiederholungen, Warm-ups, Reihenfolge, Seed,
+Timeout, Evaluator und Metriken. Eingebaut sind `contains`, `exact-json` und
+`regex-fields`; weitere Evaluatoren werden über die Registry ergänzt.
+
+```bash
+./hermesctl benchmark plan evaluation.yaml
+./hermesctl benchmark create evaluation.yaml
+./hermesctl benchmark run eval-0123456789abcdef
+./hermesctl benchmark status eval-0123456789abcdef
+./hermesctl benchmark cancel eval-0123456789abcdef
+./hermesctl benchmark resume eval-0123456789abcdef
+./hermesctl benchmark export eval-0123456789abcdef result.json
+```
+
+`plan` verändert nichts. `create` speichert Prompt, Workspace, Overlays und
+Kontexte als unveränderliche SHA-256-Artefakte. Jeder Trial verwendet einen
+kurzlebigen Agenten mit eigenem State, Workspace, Kontext, Socket und
+Container. Nur der zugewiesene Broker-CLI-Home des Quellagenten wird geteilt;
+Manifest v1 erzwingt deshalb genau einen laufenden Trial je Credential. Der
+Quellagent und `worker-context/*` werden nie verändert.
+
+Läufe sind persistent, abbrechbar und wiederaufnehmbar. Ein Abbruch wird an den
+aktiven Job und CLI-Prozess weitergereicht. Scheitert das Aufräumen, werden die
+Trial-Rechte auf null gesetzt und der Diagnosezustand bleibt erhalten.
+
+Ergebnisse enthalten Engine, Modell, gepinnte CLI-Version, Rechte-/Enforcement-
+Snapshot, Artefaktprüfsummen, Git-Commit, Seed, Dauer, Timeout-/Truncation-
+Status und getrennte Input-, Output-, Reasoning-, Cache-Read- und
+Cache-Write-Tokens. Zusammenfassungen liefern Passrate mit Wilson-95%-Intervall,
+Median, p95 sowie Token-/Kostenaggregate. Bei Monatsabos wird kein
+hypothetischer API-Preis ausgewiesen; `reported_cost_usd` ist nur mit
+`billing_mode: api` möglich.
+
+Die lokale Operatoroberfläche startet mit:
+
+```bash
+./hermesctl benchmark serve
+```
+
+Sie bindet an `127.0.0.1`, verwendet einen zufälligen Bearer-Token im
+kurzlebigen URL-Fragment, prüft Browser-Origin und setzt CSP/No-Store.
+Benchmark-Administration wird weder als Skill noch als MCP-Werkzeug an Hermes
+gegeben.
+
+Die tokenpflichtige API umfasst ausschließlich:
+
+```text
+GET  /api/v1/health
+GET  /api/v1/meta
+GET  /api/v1/experiments
+GET  /api/v1/experiments/{id}
+GET  /api/v1/experiments/{id}/results/{trial-id}
+POST /api/v1/experiments                    {"manifest_path":"..."}
+POST /api/v1/experiments/{id}/run
+POST /api/v1/experiments/{id}/resume
+POST /api/v1/experiments/{id}/cancel
+```
 
 ## Drei unabhängige Coding-Worker
 
@@ -325,7 +528,9 @@ JavaScript übernimmt das Token nur in den `Authorization: Bearer`-Header und
 entfernt das Fragment sofort aus der Adresszeile. Die statische Seite enthält
 keine Credentials; sämtliche API-Endpunkte benötigen das Token.
 
-Die Oberfläche bietet exakt zwei feste Abläufe:
+Die Oberfläche bietet für die beiden festen Worker und für registrierte
+Codex-/Claude-Agenten exakt dieselben festen Abo-Abläufe. Bei Agenten mountet
+der Broker nur den zugewiesenen CLI-Home:
 
 - **Codex CLI:** `codex login --device-auth` für den ChatGPT-Abozugang. Link
   öffnen und den Einmalcode auf der OpenAI-Seite eingeben.
@@ -350,6 +555,9 @@ Nach dem Kopieren des ausgegebenen Bearer-Tokens sind verfügbar:
 ```text
 GET    /api/v1/health
 GET    /api/v1/workers/{codex|claude}/status
+GET    /api/v1/agents
+GET    /api/v1/agents/{agent-id}/status
+GET    /api/v1/control-summary
 POST   /api/v1/login-sessions
 GET    /api/v1/login-sessions/{id}?offset=0
 POST   /api/v1/login-sessions/{id}/input
@@ -369,7 +577,11 @@ curl -H "Authorization: Bearer $LOGIN_UI_TOKEN" \
 ```
 
 `POST /api/v1/login-sessions` akzeptiert ausschließlich
-`{"worker":"codex"}` oder `{"worker":"claude"}`. Die API bindet nicht an
+`{"worker":"codex"}`, `{"worker":"claude"}` oder
+`{"agent":"<registrierte-id>"}`. Für Agenten liest die API nur Engine und
+Rolle aus der Registry; Credential-Inhalte bleiben außerhalb des Prozesses.
+Das read-only Dashboard zeigt Agenten, Teams und Jobzustände ohne Prompts oder
+Secrets. Die API bindet nicht an
 LAN-Adressen, setzt No-Store-/CSP-/Frame-Schutzheader und verwirft fremde
 Browser-Origins. `Ctrl-C` beendet den Server und bricht laufende Login-Prozesse
 ab. Diese Oberfläche ist eine reine Operator-Funktion: Sie wird weder als
@@ -411,7 +623,7 @@ gilt nur für genau einen Worker:
 ./hermesctl access codex status
 ./hermesctl access codex explain
 
-# Datei-/Suchwerkzeuge ohne allgemeine Commandline
+# Legacy-Toolstufe; bei Codex bleibt die Shell wegen innerem bwrap-Fehler aus
 ./hermesctl access codex enable tool-use
 
 # Commandline separat; sie benötigt tool-use
@@ -452,13 +664,14 @@ Die technische Abbildung ist bewusst nicht künstlich gleichgezogen:
 
 | Worker | `tools` | `commandline` | Kontext-Sperre |
 |---|---|---|---|
-| Codex CLI | Codex besitzt kein separates File-Tool; sein Shell-Tool läuft deshalb zunächst in `read-only` | schaltet denselben Toolpfad auf `workspace-write` | automatische Regeln aus, freigegebene Dateien als Developer-Instructions |
+| Codex CLI | kein separates File-Tool; Shell bleibt ohne `commandline` fail-closed aus | aktiviert Shell mit äußerer Docker-Isolation, weil inneres bubblewrap nicht initialisieren kann | automatische Regeln aus, freigegebene Dateien als Developer-Instructions |
 | Claude Code | exakt `Read, Glob, Grep, Edit, Write` | fügt ausschließlich `Bash` hinzu | Safe Mode, leere MCP-Konfiguration, freigegebene Dateien explizit angehängt |
 | OpenCode | nur `read, glob, grep, edit` | erlaubt zusätzlich `bash` | Project-Config/externe Skills aus, alle übrigen Permissions explizit `deny` |
 
-Bei Codex bedeutet `tools` daher technisch weiterhin die Ausführung
-lesender Shell-Kommandos; eine echte Trennung in native Read-/Edit- und
-Shell-Tools bietet Codex CLI derzeit nicht. Bei Claude und OpenCode sind
+Bei Codex bedeutet `tools` allein daher kein ausführbares Tool. Erst
+`tools+commandline` aktiviert die gemeinsame Shell mit Workspace-Schreibrecht;
+eine echte Trennung in native Read-/Edit- und Shell-Tools bietet dieser Adapter
+nicht. Bei Claude und OpenCode sind
 Dateiwerkzeuge und Bash tatsächlich getrennte Tooloberflächen.
 
 Offizielle Details zu diesen Unterschieden:
@@ -559,6 +772,12 @@ bleiben auch dabei reine Operator-Aktionen.
   read-only Control-Mount. Die CLI wird daraus mit einer exakten Tool-/Permission-
   Konfiguration gestartet; unfreigegebene automatische Workspace-Kontexte
   lassen den Auftrag fail-closed abbrechen.
+- Jede generische Instanz erhält eigene State-, Workspace-, Kontext-, Socket-
+  und Control-Pfade. Der Credential-Broker mountet nur ihren zugewiesenen
+  CLI-Home; die model-facing Registry ist davon getrennt und redigiert.
+- Teams teilen Ergebnisse ausschließlich als größenbegrenzte,
+  prüfsummengeschützte Artefakte. Jobzustände werden atomar persistiert;
+  Abbruch läuft über eine enge `cancel`-RPC zum betroffenen Agenten.
 
 Die effektive Policy lässt sich ohne Modell/API-Aufruf prüfen:
 
@@ -576,8 +795,10 @@ Die effektive Policy lässt sich ohne Modell/API-Aufruf prüfen:
 | Kontext | Projektdateien und `SOUL.md` werden automatisch in den Systemprompt geladen | Standardmäßig ignoriert; geschützte `AGENTS.md` und `CLAUDE.md` sind separat opt-in |
 | Memory | Langfristiges Lernen/Profil ist Kernfunktion | Deaktiviert und nicht geladen |
 | Shell | Standardmäßig lokales Backend möglich | Zweiter Container, kein Host-Mount außer Workspace, zunächst air-gapped |
-| Erweiterungen | Plugins, MCP und Hooks erweitern den Agenten dynamisch | Standardmäßig blockiert; optional nur lokal fest verdrahtete Hermesctl-/Worker-MCPs |
-| Coding-Agenten | Delegation kann Teil des allgemeinen Agenten-Ökosystems sein | Drei separat gepinnte Container, States, Workspaces, Sockets sowie je fünf separat schaltbare Worker-Rechte |
+| Erweiterungen | Plugins, MCP und Hooks erweitern den Agenten dynamisch | Standardmäßig blockiert; optional nur lokal fest verdrahtete Hermesctl-/Worker-/Agent-MCPs |
+| Coding-Agenten | Delegation kann Teil des allgemeinen Agenten-Ökosystems sein | Drei kompatible Worker plus beliebig viele registrierte, vollständig getrennte Instanzen |
+| Teams | Allgemeine Agentendelegation | Deklarative DAGs, exakte Rollen/Rechte, persistente Jobs und immutable Artefakt-Handoffs |
+| Credentials | CLI-/Provider-spezifischer State | Broker-Zuordnung pro Instanz; keine Secrets über Skills/MCP/Dashboard |
 | Bedienung | Maximale Autonomie und Komfort | Gemeinsame `access`-Schalter, aber weiterhin explizite und auditierbare Freigaben |
 
 Der Vorteil von Hermes Naked ist die kleine und nachvollziehbare Angriffsfläche:

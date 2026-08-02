@@ -8,3 +8,12 @@ services:
       - type: bind
         source: ${HERMES_HOST_ROOT}/runtime/control/workers
         target: /control/workers
+      # Registered-agent rights are managed through the redacted registry.
+      # Mount it at both repository paths expected by AgentRegistry so no
+      # private credential assignment metadata enters the controller.
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/registry/agents
+        target: /control/runtime/control/agents
+      - type: bind
+        source: ${HERMES_HOST_ROOT}/runtime/registry/agents
+        target: /control/runtime/registry/agents

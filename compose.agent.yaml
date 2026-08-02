@@ -1,0 +1,78 @@
+services:
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        WORKER_NODE_IMAGE: ${WORKER_NODE_IMAGE:-node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e}
+        WORKER_KIND: ${AGENT_ENGINE:?run through hermesctl agent}
+        WORKER_CLI_VERSION: ${AGENT_CLI_VERSION:-latest}
+    image: hermes-worker-${AGENT_ENGINE:?run through hermesctl agent}:local
+    user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2
+    environment:
+      HOME: /home/worker
+      CODEX_HOME: /home/worker/.codex
+      CLAUDE_CONFIG_DIR: /home/worker/.claude
+      XDG_DATA_HOME: /home/worker/.local/share
+      XDG_CONFIG_HOME: /home/worker/.config
+      XDG_CACHE_HOME: /home/worker/.cache
+      DISABLE_AUTOUPDATER: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      OPENCODE_DISABLE_AUTOUPDATE: "1"
+      OPENCODE_DISABLE_SHARE: "1"
+      OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1"
+      OPENCODE_DISABLE_CLAUDE_CODE: "1"
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"
+      OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
+      WORKER_KIND: ${AGENT_ENGINE:?run through hermesctl agent}
+      WORKER_ID: ${AGENT_ID:?run through hermesctl agent}
+      WORKER_HOME: /home/worker
+      WORKER_STATE: /worker-state
+      WORKER_WORKSPACE: /workspace
+      WORKER_CONTROL_FILE: /worker-control/capabilities
+      WORKER_CONTEXT: /worker-context
+      WORKER_SOCKET: /worker-socket/worker.sock
+      WORKER_POLICY_MODE: granular
+      WORKER_TIMEOUT_MAX: "1800"
+      NO_COLOR: "1"
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=512m
+    volumes:
+      - type: bind
+        source: ${AGENT_CREDENTIAL_HOME:?run through hermesctl agent}
+        target: /home/worker
+      - type: bind
+        source: ${AGENT_STATE:?run through hermesctl agent}
+        target: /worker-state
+      - type: bind
+        source: ${AGENT_WORKSPACE:?run through hermesctl agent}
+        target: /workspace
+      - type: bind
+        source: ${AGENT_SOCKET:?run through hermesctl agent}
+        target: /worker-socket
+      - type: bind
+        source: ${AGENT_CONTROL:?run through hermesctl agent}
+        target: /worker-control
+        read_only: true
+      - type: bind
+        source: ${AGENT_CONTEXT:?run through hermesctl agent}
+        target: /worker-context
+        read_only: true
+    healthcheck:
+      test: [CMD-SHELL, "test -S /worker-socket/worker.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks: [agent-provider-egress]
+
+networks:
+  agent-provider-egress:
+    driver: bridge
