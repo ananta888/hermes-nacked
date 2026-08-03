@@ -43,6 +43,20 @@ Das Hermes-Basisimage ist bewusst per Digest gepinnt. Ein Upgrade erfolgt
 absichtlich über `HERMES_IMAGE` in `.env` und anschließendem
 `./hermesctl build && ./hermesctl verify`, nicht unbemerkt über `latest`.
 
+### Python als Standardlaufzeit
+
+Alle vom Projekt gebauten Container enthalten ausdrücklich `python`,
+`python3`, `pip3` und das `venv`-Modul. Das gilt für den Hermes-Controller,
+die festen Codex-/Claude-/OpenCode-Worker und alle generischen Agenten, weil
+diese dasselbe Worker-Basisimage verwenden. Die konkrete Python-Version folgt
+dem jeweils gepinnten Debian-Basisimage.
+
+Die standardmäßige Command-Sandbox verwendet weiterhin das gepinnte
+`python:3.13-slim-bookworm`-Image. Wer `HERMES_SANDBOX_IMAGE` überschreibt,
+muss Python im eigenen Ersatzimage selbst bereitstellen. Die installierte
+Laufzeit erteilt dem Modell keine Datei-, Shell- oder Netzwerkrechte; dafür
+gelten unverändert die separat aktivierten Capabilities.
+
 ## Modelle einfach konfigurieren
 
 Für alle Provider beginnt die Auswahl gleich:

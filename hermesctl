@@ -1142,6 +1142,19 @@ EOF
     "${BASE_COMPOSE[@]}" build hermes
     "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" build \
       worker-codex worker-claude worker-opencode
+    printf '\nPython runtime probes:\n'
+    verify_python_images=(
+      hermes-naked:local
+      hermes-worker-codex:local
+      hermes-worker-claude:local
+      hermes-worker-opencode:local
+      "${HERMES_SANDBOX_IMAGE:-python:3.13-slim-bookworm}"
+    )
+    for verify_python_image in "${verify_python_images[@]}"; do
+      printf '%s\n' "$verify_python_image"
+      docker run --rm --entrypoint /bin/sh "$verify_python_image" -c \
+        'python --version && python3 --version && pip3 --version && python3 -c "import venv"'
+    done
     env COMPOSE_IGNORE_ORPHANS=true \
       "${BASE_COMPOSE[@]}" "${ALL_WORKER_COMPOSE[@]}" up -d --wait \
       --wait-timeout 60 worker-codex worker-claude worker-opencode

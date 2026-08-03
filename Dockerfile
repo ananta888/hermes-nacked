@@ -1,6 +1,14 @@
 ARG HERMES_IMAGE=nousresearch/hermes-agent@sha256:cbcbe555961c3f36124db521a179b5b61eea00acf5629a27086c9350899df191
 FROM ${HERMES_IMAGE}
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3 python3-pip python3-venv python-is-python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python --version \
+    && python3 --version \
+    && pip3 --version
+
 COPY --chmod=0444 container/policy.py /usr/local/lib/hermes_naked_policy.py
 COPY --chmod=0444 container/policy.py /usr/local/lib/hermesctl_policy.py
 COPY --chmod=0444 container/worker_policy.py /usr/local/lib/hermes_worker_policy.py
